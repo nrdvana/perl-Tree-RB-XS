@@ -1,0 +1,6 @@
+TYPEMAP
+struct rbtree*        O_rbtree
+
+INPUT
+O_rbtree
+    $var= rbtree_get_objref_tree($arg, OR_DIE);

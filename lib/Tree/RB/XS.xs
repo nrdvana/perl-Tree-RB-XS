@@ -5,16 +5,15 @@
 
 #define AUTOCREATE 1
 #define OR_DIE 2
-#define KEY_TYPE_ANY 1
-#define KEY_TYPE_INT 2
-#define KEY_TYPE_FLOAT 3
-#define KEY_TYPE_STR 4
-#define KEY_TYPE_MAX 4
+#define KEY_TYPE_INT 1
+#define KEY_TYPE_STR 2
+#define KEY_TYPE_ANY 3
+#define KEY_TYPE_MAX 3
 
 struct rbtree {
 	SV *owner;
 	int key_type;
-	SV *compare_callback;
+	CV *compare_callback;
 };
 
 void rbtree_destroy(struct rbtree *tree) {
@@ -87,13 +86,13 @@ void
 _init_tree(obj, key_type, compare_fn= NULL)
 	SV *obj
 	int key_type
-	SV *compare_fn
+	CV *compare_fn
 	INIT:
 		struct rbtree *tree;
 	CODE:
 		if (!sv_isobject(obj))
 			croak("_init_tree called on non-object");
-		if (key_type <= 0 || key_type > KEY_TYPE_MAX)
+		if (keytype < 0 || keytype > KEY_TYPE_MAX)
 			croak("invalid key_type");
 		tree= rbtree_get_obj_tree(SvRV(obj), AUTOCREATE);
 		if (tree->owner)
@@ -104,9 +103,6 @@ _init_tree(obj, key_type, compare_fn= NULL)
 
 BOOT:
 	HV* stash= gv_stashpvn("Tree::RB::XS", 12, 1);
-	newCONSTSUB(stash, "KEY_TYPE_ANY",   newSViv(KEY_TYPE_ANY));
-	newCONSTSUB(stash, "KEY_TYPE_INT",   newSViv(KEY_TYPE_INT));
-	newCONSTSUB(stash, "KEY_TYPE_FLOAT", newSViv(KEY_TYPE_FLOAT));
-	newCONSTSUB(stash, "KEY_TYPE_STR",   newSViv(KEY_TYPE_STR));
-
-PROTOTYPES: DISABLE
+	newCONSTSUB(stash, "KEY_TYPE_INT", newSViv(KEY_TYPE_INT));
+	newCONSTSUB(stash, "KEY_TYPE_STR", newSViv(KEY_TYPE_STR));
+	newCONSTSUB(stash, "KEY_TYPE_ANY", newSViv(KEY_TYPE_ANY));
