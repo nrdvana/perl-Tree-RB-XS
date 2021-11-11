@@ -1,6 +1,6 @@
 TYPEMAP
-struct rbtree*        O_rbtree
+struct TreeRBXS*        O_TreeRBXS
 
 INPUT
-O_rbtree
-    $var= rbtree_get_objref_tree($arg, OR_DIE);
+O_TreeRBXS
+    $var= TreeRBXS_obj_get_struct($arg, OR_DIE);
