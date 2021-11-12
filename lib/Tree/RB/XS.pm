@@ -102,6 +102,13 @@ Associate the key with a new value.  If the key previously existed, this returns
 the old value, and updates the tree to reference the new value.  If the tree
 allows duplicate keys, this will replace all nodes having this key.
 
+=head2 delete
+
+  my $count= $tree->delete($key);
+
+Delete any node with a key identical to C<$key>, and return the number of nodes
+removed.  (This will only return 0 or 1, unless you enable duplicate keys.)
+
 =head2 insert
 
 Insert a new node into the tree, and return the index at which it was inserted.
@@ -174,6 +181,17 @@ The parent node, if any.
 =item count
 
 The number of items in the tree rooted at this node (inclusive)
+
+=back
+
+And the following methods:
+
+=over 10
+
+=item prune
+
+Remove this single node from the tree.  The node will still have its key and value,
+but all attributes linking to other nodes will become C<undef>.
 
 =back
 
