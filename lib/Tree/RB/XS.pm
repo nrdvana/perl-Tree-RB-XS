@@ -57,6 +57,8 @@ sub new {
 
 =head1 ATTRIBUTES
 
+=head2 key_type
+
 =head2 compare_fn
 
 The optional coderef that will be called each time keys need compared.
@@ -65,6 +67,16 @@ The optional coderef that will be called each time keys need compared.
 
 sub key_type { $_[0]{key_type} || Tree::RB::XS::KEY_TYPE_STR() }
 sub compare_fn { $_[0]{compare_fn} }
+
+=head2 size
+
+Returns the number of elements in the tree.
+
+=head1 METHODS
+
+=head2 insert
+
+=head2 put
 
 =head1 EXPORTS
 

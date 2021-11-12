@@ -1,4 +1,5 @@
 #! /usr/bin/env perl
+system('util/generate_rbtree_headers.pl');
 my $out= `dzil build`;
 my ($dir)= ($out =~ /built in (\S*)/);
 -d $dir or die "Can't determine build dir";

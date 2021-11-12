@@ -88,6 +88,8 @@ typedef struct ${ns}node {
 #endif
 } $nd;
 
+typedef int (*${ns}compare_fn)(${cmp_ctx_decl}void *a, void *b);
+
 #define ${ns}node_is_in_tree(node) ((bool) (node)->count)
 
 /* Initialize a tree */
@@ -106,13 +108,17 @@ $api $nd *${ns}node_right_leaf( $nd *node );
 $api $nd *${ns}node_left_leaf( $nd *node );
 
 /* Add a node to a tree */
-$api bool ${ns}node_insert( $nd *hint, $nd *node, int(*cmp_fn)(${cmp_ctx_decl}void *a, void *b), ${cmp_ctx_decl}int cmp_pointer_ofs );
+$api bool ${ns}node_insert( $nd *hint, $nd *node, ${ns}compare_fn cmp_fn, ${cmp_ctx_decl}int cmp_pointer_ofs );
+
+$api $nd * ${ns}find_nearest( $nd *node, void *goal,
+	int(*cmp_fn)(${cmp_ctx_decl}void *a, void *b), ${cmp_ctx_decl}int cmp_pointer_ofs,
+	int *cmp_result );
 
 /* Find a node matching or close to 'goal'.  Pass NULL for answers that aren't needed.
  * Returns true for an exact match (cmp==0) and false for anything else.
  */
-$api bool ${ns}node_search( $nd *node, void *goal, int(*cmp_fn)(${cmp_ctx_decl}void *a, void *b), ${cmp_ctx_decl}int cmp_pointer_ofs,
-	$nd **result_first, $nd **result_last, int *result_count );
+$api bool ${ns}find_all( $nd *node, void *goal, ${ns}compare_fn cmp_fn, ${cmp_ctx_decl}int cmp_pointer_ofs,
+	$nd **result_first, $nd **result_last, size_t *result_count );
 END
 
 	$src .= <<"END" if $self->with_index;
@@ -120,7 +126,7 @@ END
 /* Returns index of a node within the tree, as if the tree were a sorted array.
  * In other words, returns the number of nodes with a key less than this node.
  */
-$api int ${ns}node_index( $nd *node );
+$api size_t ${ns}node_index( $nd *node );
 
 /* Returns Nth child of a node, or NULL */
 $api $nd *${ns}node_child_at_index( $nd *node, size_t index );
@@ -148,7 +154,7 @@ END
 #define @{[ uc $ns ]}INVALID_COUNT    8
 #define @{[ uc $ns ]}INVALID_COLOR   16
 #define @{[ uc $ns ]}INVALID_ORDER   32
-$api int ${ns}check_structure( $nd *node, int(*cmp_fn)(void *a, void *b), int cmp_pointer_ofs );
+$api int ${ns}check_structure( $nd *node, ${ns}compare_fn cmp_fn, ${cmp_ctx_decl}int cmp_pointer_ofs );
 
 END
 	$src .= "\n#endif /* $include_guard */\n";
@@ -188,6 +194,7 @@ Credits:
 
 #define IS_BLACK(node)         (!(node)->color)
 #define IS_RED(node)           ((node)->color)
+#define NODE_IS_IN_TREE(node)  ((node)->count != 0)
 #define SET_COLOR_BLACK(node)  ((node)->color= 0)
 #define SET_COLOR_RED(node)    ((node)->color= 1)
 #define COPY_COLOR(dest,src)   ((dest)->color= (src)->color)
@@ -281,17 +288,48 @@ $nd *${ns}node_next( $nd *node ) {
 	}
 }
 
-/** Fancy find algorithm.
+/** Simple find algorithm.
+ * This function looks for the nearest node to the requested key, returning the node and
+ * the final value of the compare function which indicates whether this is the node equal to,
+ * before, or after the requested key.
+ */
+$nd * ${ns}find_nearest($nd *node, void *goal,
+	int(*compare)(${cmp_ctx_decl}void *a,void *b), ${cmp_ctx_decl}int cmp_ptr_ofs,
+	int *last_cmp_out
+) {
+	$nd *nearest= NULL, *test;
+	int count, cmp= 0;
+	
+	if (IS_ROOTSENTINEL(node))
+		node= node->left;
+
+	while (NOT_SENTINEL(node)) {
+		nearest= node;
+		cmp= compare( ${cmp_ctx_arg}goal, PTR_OFS(node,cmp_ptr_ofs) );
+		if      (cmp<0) node= node->left;
+		else if (cmp>0) node= node->right;
+		else break;
+	}
+	if (nearest && last_cmp_out)
+		*last_cmp_out= cmp;
+	return nearest;
+}
+
+/** Find-all algorithm.
  * This function not only finds a node, but can find the nearest node to the one requested, finds the number of
  * matching nodes, and gets the first and last node so the matches can be iterated.
  */
-bool ${ns}node_search(
-	$nd *node, void* goal, int(*compare)(${cmp_ctx_decl}void *a,void *b), ${cmp_ctx_decl}int cmp_ptr_ofs,
-	$nd **result_first, $nd **result_last, int *result_count
+bool ${ns}find_all($nd *node, void* goal,
+	int(*compare)(${cmp_ctx_decl}void *a,void *b), ${cmp_ctx_decl}int cmp_ptr_ofs,
+	$nd **result_first, $nd **result_last, size_t *result_count
 ) {
 	$nd *nearest= NULL, *first, *last, *test;
-	int count, cmp;
+	size_t count;
+	int cmp;
 	
+	if (IS_ROOTSENTINEL(node))
+		node= node->left;
+
 	while (NOT_SENTINEL(node)) {
 		nearest= node;
 		cmp= compare( ${cmp_ctx_arg}goal, PTR_OFS(node,cmp_ptr_ofs) );
@@ -302,9 +340,9 @@ bool ${ns}node_search(
 	if (IS_SENTINEL(node)) {
 		/* no matches. Look up neighbor node if requested. */
 		if (result_first)
-			*result_first= cmp < 0? ${ns}node_prev(nearest) : nearest;
+			*result_first= nearest && cmp < 0? ${ns}node_prev(nearest) : nearest;
 		if (result_last)
-			*result_last=  cmp > 0? ${ns}node_next(nearest) : nearest;
+			*result_last=  nearest && cmp > 0? ${ns}node_next(nearest) : nearest;
 		if (result_count) *result_count= 0;
 		return false;
 	}
@@ -351,7 +389,7 @@ bool ${ns}node_search(
  */
 bool ${ns}node_insert( $nd *hint, $nd *node, int(*compare)(${cmp_ctx_decl}void *a, void *b), ${cmp_ctx_decl}int cmp_ptr_ofs) {
 	// Can't insert node if it is already in the tree
-	if (GET_COUNT(node))
+	if (NODE_IS_IN_TREE(node))
 		return false;
 	// check for first node scenario
 	if (IS_ROOTSENTINEL(hint)) {
@@ -524,8 +562,8 @@ END
 
 	$src .= <<"END" if $self->with_index;
 
-int ${ns}node_index( $nd *node ) {
-	int left_count= node->left->count;
+size_t ${ns}node_index( $nd *node ) {
+	int left_count= GET_COUNT(node->left);
 	$nd *prev= node;
 	node= node->parent;
 	while (NOT_SENTINEL(node)) {
@@ -754,37 +792,43 @@ END
 /** Mark all nodes as being not-in-tree, and possibly delete the objects that contain them.
  * DeleteProc is optional.  If given, it will be called on the 'Object' which contains the $nd.
  * obj_ofs is a negative (or zero) number of bytes offset from the $nd pointer to the containing
- * object pointer.  `opaque` is a user-defined pointer to pass to the destructor.
+ * object pointer.  `ctx` is a user-defined context pointer to pass to the destructor.
  */
-void ${ns}clear( $nd *root_sentinel, void (*destructor)(void *obj, void *opaque), int obj_ofs, void *opaque ) {
+void ${ns}clear( $nd *root_sentinel, void (*destructor)(void *obj, void *ctx), int obj_ofs, void *ctx ) {
 	$nd *current, *next;
-	int direction;
-	// make sure we actually have something to do
-	if (root_sentinel->left == root_sentinel->right)
-		return;
+	int from_left;
+	// Delete in a depth-first post-traversal, because the node might not exist after
+	// calling the destructor.
+	if (!IS_ROOTSENTINEL(root_sentinel))
+		return; /* this is API usage bug, but no way to report it */
+	if (IS_SENTINEL(root_sentinel->left))
+		return; /* tree already empty */
 	current= root_sentinel->left;
-	direction= 0; // came from above
-	while (current != root_sentinel->right)
-		switch (direction) {
-		case 0: // came from above, go down-left
+	while (1) {
+		check_left: // came from above, go down-left
 			if (NOT_SENTINEL(current->left)) {
 				current= current->left;
-				continue;
+				goto check_left;
 			}
-		case 1: // came up from the left, go down-right
+		check_right: // came up from the left, go down-right
 			if (NOT_SENTINEL(current->right)) {
 				current= current->right;
-				direction= 0;
-				continue;
+				goto check_left;
 			}
-		case 2: // came up from the right, kill the current node and proceed up
+		zap_current: // came up from the right, kill the current node and proceed up
 			next= current->parent;
+			from_left= (next->left == current)? 1 : 0;
 			SET_COUNT(current, 0);
-			direction= next->right == current? 2 : 1;
-			if (destructor) destructor(PTR_OFS(current,obj_ofs), opaque);
+			current->left= current->right= current->parent= NULL;
+			if (destructor) destructor(PTR_OFS(current,obj_ofs), ctx);
 			current= next;
-		}
-	
+			if (current == root_sentinel)
+				break;
+			else if (from_left)
+				goto check_right;
+			else
+				goto zap_current;
+	}
 	root_sentinel->left= root_sentinel->right;
 	SET_COLOR_BLACK(root_sentinel);
 	SET_COUNT(root_sentinel, 0);
@@ -794,9 +838,9 @@ END
 
 	$src .= <<"END" if $self->with_check;
 
-static int CheckSubtree($nd *node, int(*compare)(void *a, void *b), int cmp_pointer_ofs, int *black_count);
+static int CheckSubtree($nd *node, ${ns}compare_fn, ${cmp_ctx_decl}int, int *);
 
-int ${ns}check_structure($nd *node, int(*compare)(void *a, void *b), int cmp_pointer_ofs) {
+int ${ns}check_structure($nd *node, ${ns}compare_fn compare, ${cmp_ctx_decl}int cmp_pointer_ofs) {
 	// If at root, check for root sentinel details
 	if (node && !node->parent) {
 		if (IS_RED(node) || IS_RED(node->left) || GET_COUNT(node) || GET_COUNT(node->right))
@@ -810,10 +854,10 @@ int ${ns}check_structure($nd *node, int(*compare)(void *a, void *b), int cmp_poi
 		node= node->left; /* else start checking at first real node */
 	}
 	int black_count;
-	return CheckSubtree(node, compare, cmp_pointer_ofs, &black_count);
+	return CheckSubtree(node, compare, ${cmp_ctx_arg}cmp_pointer_ofs, &black_count);
 }
 
-int CheckSubtree($nd *node, int(*compare)(void *a, void *b), int cmp_pointer_ofs, int *black_count) {
+int CheckSubtree($nd *node, ${ns}compare_fn compare, ${cmp_ctx_decl}int cmp_pointer_ofs, int *black_count) {
 	// This node should be fully attached to the tree
 	if (!node || !node->parent || !node->left || !node->right || !GET_COUNT(node))
 		return RBTREE_INVALID_NODE;
@@ -827,9 +871,9 @@ int CheckSubtree($nd *node, int(*compare)(void *a, void *b), int cmp_pointer_ofs
 			return RBTREE_INVALID_NODE;
 		if (IS_RED(node) && IS_RED(node->left))
 			return RBTREE_INVALID_COLOR;
-		if (compare(PTR_OFS(node->left, cmp_pointer_ofs), PTR_OFS(node, cmp_pointer_ofs)) > 0)
+		if (compare(${cmp_ctx_arg}PTR_OFS(node->left, cmp_pointer_ofs), PTR_OFS(node, cmp_pointer_ofs)) > 0)
 			return RBTREE_INVALID_ORDER;
-		int err= CheckSubtree(node->left, compare, cmp_pointer_ofs, &left_black_count);
+		int err= CheckSubtree(node->left, compare, ${cmp_ctx_arg}cmp_pointer_ofs, &left_black_count);
 		if (err) return err;
 	}
 	if (NOT_SENTINEL(node->right)) {
@@ -837,9 +881,9 @@ int CheckSubtree($nd *node, int(*compare)(void *a, void *b), int cmp_pointer_ofs
 			return RBTREE_INVALID_NODE;
 		if (IS_RED(node) && IS_RED(node->right))
 			return RBTREE_INVALID_COLOR;
-		if (compare(PTR_OFS(node->right, cmp_pointer_ofs), PTR_OFS(node, cmp_pointer_ofs)) < 0)
+		if (compare(${cmp_ctx_arg}PTR_OFS(node->right, cmp_pointer_ofs), PTR_OFS(node, cmp_pointer_ofs)) < 0)
 			return RBTREE_INVALID_ORDER;
-		int err= CheckSubtree(node->right, compare, cmp_pointer_ofs, &right_black_count);
+		int err= CheckSubtree(node->right, compare, ${cmp_ctx_arg}cmp_pointer_ofs, &right_black_count);
 		if (err) return err;
 	}
 	if (left_black_count != right_black_count)
