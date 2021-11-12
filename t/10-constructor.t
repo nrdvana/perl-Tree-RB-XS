@@ -5,6 +5,8 @@ use Tree::RB::XS qw( KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_STR );
 my $looks_like_tree= object sub {
 	prop isa => 'Tree::RB::XS';
 	call key_type => T();
+	call allow_duplicates => 0;
+	call size => 0;
 };
 
 subtest default_tree => sub {

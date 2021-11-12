@@ -169,7 +169,7 @@ _init_tree(obj, key_type, compare_fn= NULL)
 	SV *compare_fn
 	INIT:
 		struct TreeRBXS *tree;
-	CODE:
+	PPCODE:
 		if (!sv_isobject(obj))
 			croak("_init_tree called on non-object");
 		if (key_type <= 0 || key_type > KEY_TYPE_MAX)
@@ -187,18 +187,31 @@ _init_tree(obj, key_type, compare_fn= NULL)
 			: key_type == KEY_TYPE_ANY? TreeRBXS_cmp_str
 			: NULL;
 		if (!tree->compare) croak("Un-handled key comparison configuration");
+		XSRETURN(1);
 
 void
-_set_allow_duplicates(tree, allow)
+allow_duplicates(tree, allow= NULL)
 	struct TreeRBXS *tree
-	bool allow
-	CODE:
-		if (tree->root_sentinel.left->count)
-			croak("Cannot change the setting of 'allow_duplicated' when the tree is not empty");
-		tree->allow_duplicates= allow;
+	SV* allow
+	PPCODE:
+		if (items > 1) {
+			tree->allow_duplicates= SvTRUE(allow);
+			// ST(0) is $self, so let it be the return value
+		} else {
+			ST(0)= sv_2mortal(newSViv(tree->allow_duplicates? 1 : 0));
+		}
+		XSRETURN(1);
 
-void
-_insert(tree, key, val)
+IV
+size(tree)
+	struct TreeRBXS *tree
+	CODE:
+		RETVAL= tree->root_sentinel.left->count;
+	OUTPUT:
+		RETVAL
+
+SV*
+put(tree, key, val)
 	struct TreeRBXS *tree
 	SV *key
 	SV *val
@@ -255,6 +268,9 @@ _insert(tree, key, val)
 		} else {
 			croak("BUG: insert failed");
 		}
+		RETVAL= ST(0);
+	OUTPUT:
+		RETVAL
 
 BOOT:
 	HV* stash= gv_stashpvn("Tree::RB::XS", 12, 1);
