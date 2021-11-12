@@ -9,3 +9,7 @@ O_TreeRBXS
 INPUT
 O_TreeRBXS_item
 	$var= TreeRBXS_get_magic_item($arg, OR_DIE);
+
+OUTPUT
+O_TreeRBXS_item
+	$arg= TreeRBXS_wrap_item($var);

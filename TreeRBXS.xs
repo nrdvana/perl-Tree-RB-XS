@@ -19,32 +19,35 @@ struct TreeRBXS_item;
 
 typedef int TreeRBXS_cmp_fn(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b);
 
+// Struct attached to each instance of Tree::RB::XS
 struct TreeRBXS {
-	SV *owner;
-	int key_type;
-	bool allow_duplicates;
-	TreeRBXS_cmp_fn *compare;
-	SV *compare_callback;
-	rbtree_node_t root_sentinel;
-	rbtree_node_t leaf_sentinel;
-	struct TreeRBXS_item *tmp_item;
-	HV *iterators;
+	SV *owner;                     // points to Tree::RB::XS internal HV (not ref)
+	int key_type;                  // must always be set and never changed
+	bool allow_duplicates;         // flag to affect behavior of insert.  may be changed.
+	TreeRBXS_cmp_fn *compare;      // internal compare function.  Always set and never changed.
+	SV *compare_callback;          // user-supplied compare.  May be NULL, but can never be changed.
+	rbtree_node_t root_sentinel;   // parent-of-root, used by rbtree implementation.
+	rbtree_node_t leaf_sentinel;   // dummy node used by rbtree implementation.
+	struct TreeRBXS_item *tmp_item;// scratch space used by insert()
 };
 
 #define OFS_TreeRBXS_item_FIELD_rbnode ( ((char*) &(((struct TreeRBXS_item *)(void*)10000)->rbnode)) - ((char*)10000) )
 #define GET_TreeRBXS_item_FROM_rbnode(node) ((struct TreeRBXS_item*) (((char*)node) - OFS_TreeRBXS_item_FIELD_rbnode))
 
-#define TREERBXS_ITEM_SKEY 1
+// Struct attached to each instance of Tree::RB::XS::Node
+// I named it 'item' instead of 'node' to prevent confusion with the actual
+// rbtree_node_t used by the underlying library.
 struct TreeRBXS_item {
-	SV *owner;
-	rbtree_node_t rbnode;
-	union itemkey_u {
+	SV *owner;            // points to Tree::RB::XS::Node internal SV (not ref), or NULL if not wrapped
+	rbtree_node_t rbnode; // actual red/black left/right/color/parent/count fields
+	union itemkey_u {     // key variations are overlapped to save space
 		IV ikey;
 		NV nkey;
-		SV *skey;
+		SV *skey;         // This Perl SV is only valid if  (flags & TREERBXS_ITEM_SKEY)
 	} keyunion;
-	SV *value;
-	int flags;
+	SV *value;            // value will be set unless struct is just used as a search key
+	int key_type: 4,
+		flags: 28;
 };
 
 static void TreeRBXS_assert_structure(struct TreeRBXS *tree) {
@@ -75,21 +78,23 @@ static void TreeRBXS_init_tmp_item(struct TreeRBXS *tree, SV *key, SV *value) {
 	} else {
 		Newxz(item, 1, struct TreeRBXS_item);
 		tree->tmp_item= item;
+		item->key_type= tree->key_type;
 	}
 	/* key_type can never change, so it is safe to assume that previous init
 	 * of the item is the same as what would occur now.
 	 */
 	switch (tree->key_type) {
 	case KEY_TYPE_STR:
-	case KEY_TYPE_ANY:   if (item->keyunion.skey)
-	                         sv_setsv(item->keyunion.skey, key);
-	                     else
-	                         item->keyunion.skey= newSVsv(key);
-	                     item->flags |= TREERBXS_ITEM_SKEY;
-	                     break;
+	case KEY_TYPE_ANY:
+		if (item->keyunion.skey)
+			sv_setsv(item->keyunion.skey, key);
+		else
+			item->keyunion.skey= newSVsv(key);
+		break;
 	case KEY_TYPE_INT:   item->keyunion.ikey= SvIV(key); break;
 	case KEY_TYPE_FLOAT: item->keyunion.nkey= SvNV(key); break;
-	default:             croak("BUG: unhandled key_type");
+	default:
+		croak("BUG: un-handled key_type");
 	}
 	if (item->value)
 		sv_setsv(item->value, value);
@@ -98,8 +103,9 @@ static void TreeRBXS_init_tmp_item(struct TreeRBXS *tree, SV *key, SV *value) {
 }
 
 static void TreeRBXS_item_free(struct TreeRBXS_item *item) {
-	if (item->flags & TREERBXS_ITEM_SKEY)
-		SvREFCNT_dec(item->keyunion.skey);
+	if (item->key_type == KEY_TYPE_STR || item->key_type == KEY_TYPE_ANY)
+		if (item->keyunion.skey)
+			SvREFCNT_dec(item->keyunion.skey);
 	if (item->value)
 		SvREFCNT_dec(item->value);
 	Safefree(item);
@@ -173,8 +179,12 @@ static int TreeRBXS_cmp_perl(struct TreeRBXS *tree, struct TreeRBXS_item *a, str
 }
 
 /*------------------------------------------------------------------------------------
- * This defines the "Magic" that perl attaches to a scalar.
+ * Definitions of Perl MAGIC that attach C structs to Perl SVs
+ * All instances of Tree::RB::XS have a magic-attached struct TreeRBXS
+ * All instances of Tree::RB::XS::Node have a magic-attached struct TreeRBXS_item
  */
+
+// destructor for Tree::RB::XS
 static int TreeRBXS_magic_free(pTHX_ SV* sv, MAGIC* mg) {
     if (mg->mg_ptr) {
         TreeRBXS_destroy((struct TreeRBXS*) mg->mg_ptr);
@@ -192,6 +202,7 @@ static int TreeRBXS_magic_dup(pTHX_ MAGIC *mg, CLONE_PARAMS *param) {
 #define TreeRBXS_magic_dup 0
 #endif
 
+// magic table for Tree::RB::XS
 static MGVTBL TreeRBXS_magic_vt= {
 	0, /* get */
 	0, /* write */
@@ -205,6 +216,7 @@ static MGVTBL TreeRBXS_magic_vt= {
 #endif
 };
 
+// destructor for Tree::RB::XS::Node
 static int TreeRBXS_item_magic_free(pTHX_ SV* sv, MAGIC* mg) {
 	if (mg->mg_ptr) {
 		TreeRBXS_item_detach_owner((struct TreeRBXS_item*) mg->mg_ptr);
@@ -213,6 +225,7 @@ static int TreeRBXS_item_magic_free(pTHX_ SV* sv, MAGIC* mg) {
 	return 0;
 }
 
+// magic table for Tree::RB::XS::Node
 static MGVTBL TreeRBXS_item_magic_vt= {
 	0, /* get */
 	0, /* write */
@@ -226,10 +239,10 @@ static MGVTBL TreeRBXS_item_magic_vt= {
 #endif
 };
 
-/* Get TreeRBXS struct attached to a Perl SV Ref.
- * Use AUTOCREATE to attach magic if it wasn't present.
- * Use OR_DIE for a built-in croak() if the return value would be NULL.
- */
+// Return the TreeRBXS struct attached to a Perl object via MAGIC.
+// The 'obj' should be a reference to a blessed SV.
+// Use AUTOCREATE to attach magic and allocate a struct if it wasn't present.
+// Use OR_DIE for a built-in croak() if the return value would be NULL.
 static struct TreeRBXS* TreeRBXS_get_magic_tree(SV *obj, int flags) {
 	SV *sv;
 	MAGIC* magic;
@@ -261,6 +274,8 @@ static struct TreeRBXS* TreeRBXS_get_magic_tree(SV *obj, int flags) {
 	return NULL;
 }
 
+// Return the TreeRBXS_item that was attached to a perl object via MAGIC.
+// The 'obj' should be a referene to a blessed magical SV.
 static struct TreeRBXS_item* TreeRBXS_get_magic_item(SV *obj, int flags) {
 	SV *sv;
 	MAGIC* magic;
@@ -283,6 +298,11 @@ static struct TreeRBXS_item* TreeRBXS_get_magic_item(SV *obj, int flags) {
 	return NULL;
 }
 
+// Set the TreeRBXS_item pointer of some perl object to a new value.
+// The 'obj' should be a reference to a blessed magical SV.
+// If this perl SV already pointed to a different item, that reference is removed.
+// If a different Perl SV owns this item, that reference is also removed.
+// If this Perl SV already owns this item, nothing happens.
 static void TreeRBXS_set_magic_item(SV *obj, struct TreeRBXS_item *item) {
 	SV *sv, *oldowner;
 	MAGIC* magic;
@@ -304,7 +324,7 @@ static void TreeRBXS_set_magic_item(SV *obj, struct TreeRBXS_item *item) {
 			}
 	}
 
-	item->owner= obj;
+	item->owner= sv;
 
 	/* If the object already owns one item, need to release that reference, possibly freeing the item */
 	if (SvMAGICAL(sv)) {
@@ -325,6 +345,28 @@ static void TreeRBXS_set_magic_item(SV *obj, struct TreeRBXS_item *item) {
 #endif
 }
 
+// Return existing Node object, or create a new one.
+// Returned SV is a reference with active refcount, which is what the typemap
+// wants for returning a "struct TreeRBXS_item*" to prel-land
+static SV* TreeRBXS_wrap_item(struct TreeRBXS_item *item) {
+	SV *obj, *sv;
+	// Since this is used in typemap, handle NULL gracefully
+	if (!item)
+		return &PL_sv_undef;
+	// If there is already a node object, return a new reference to it.
+	if (item->owner)
+		return newRV_inc(item->owner);
+	// else create a node
+	obj= newRV_noinc(newSV(0));
+	sv_bless(obj, gv_stashpv("Tree::RB::XS::Node", GV_ADD));
+	TreeRBXS_set_magic_item(obj, item);
+	return obj;
+}
+
+/*----------------------------------------------------------------------------
+ * Tree Methods
+ */
+
 MODULE = Tree::RB::XS              PACKAGE = Tree::RB::XS
 
 void
@@ -343,18 +385,22 @@ _init_tree(obj, key_type, compare_fn= NULL)
 		if (tree->owner)
 			croak("Tree is already initialized");
 		tree->owner= SvRV(obj);
-		tree->key_type= key_type;
 		if (SvOK(compare_fn)) {
 			tree->compare_callback= compare_fn;
 			SvREFCNT_inc(tree->compare_callback);
+			tree->key_type= KEY_TYPE_ANY;
+			tree->compare= TreeRBXS_cmp_perl;
 		}
-		tree->compare= tree->compare_callback? TreeRBXS_cmp_perl
-			: key_type == KEY_TYPE_INT? TreeRBXS_cmp_int
-			: key_type == KEY_TYPE_FLOAT? TreeRBXS_cmp_float
-			: key_type == KEY_TYPE_STR? TreeRBXS_cmp_str
-			: key_type == KEY_TYPE_ANY? TreeRBXS_cmp_str
-			: NULL;
-		if (!tree->compare) croak("Un-handled key comparison configuration");
+		else {
+			tree->key_type= key_type;
+			tree->compare=
+				  key_type == KEY_TYPE_INT? TreeRBXS_cmp_int
+				: key_type == KEY_TYPE_FLOAT? TreeRBXS_cmp_float
+				: key_type == KEY_TYPE_STR? TreeRBXS_cmp_str
+				: key_type == KEY_TYPE_ANY? TreeRBXS_cmp_str
+				: NULL;
+			if (!tree->compare) croak("Un-handled key comparison configuration");
+		}
 		XSRETURN(1);
 
 void
@@ -508,6 +554,134 @@ get(tree, key)
 			ST(0)= item->value;
 		}
 		XSRETURN(1);
+
+struct TreeRBXS_item *
+min_node(tree)
+	struct TreeRBXS *tree
+	INIT:
+		rbtree_node_t *node= rbtree_node_left_leaf(tree->root_sentinel.left);
+	CODE:
+		RETVAL= node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
+	OUTPUT:
+		RETVAL
+
+struct TreeRBXS_item *
+max_node(tree)
+	struct TreeRBXS *tree
+	INIT:
+		rbtree_node_t *node= rbtree_node_right_leaf(tree->root_sentinel.left);
+	CODE:
+		RETVAL= node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
+	OUTPUT:
+		RETVAL
+
+struct TreeRBXS_item *
+nth_node(tree, ofs)
+	struct TreeRBXS *tree
+	IV ofs
+	INIT:
+		rbtree_node_t *node;
+	CODE:
+		if (ofs < 0) ofs += tree->root_sentinel.left->count;
+		node= rbtree_node_child_at_index(tree->root_sentinel.left, ofs);
+		RETVAL= node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
+	OUTPUT:
+		RETVAL
+
+#-----------------------------------------------------------------------------
+#  Node Methods
+#
+
+MODULE = Tree::RB::XS              PACKAGE = Tree::RB::XS::Node
+
+SV *
+key(item)
+	struct TreeRBXS_item *item
+	CODE:
+		switch (item->key_type) {
+		case KEY_TYPE_ANY:
+		case KEY_TYPE_STR: RETVAL= newSVsv(item->keyunion.skey); break;
+		case KEY_TYPE_INT: RETVAL= newSViv(item->keyunion.ikey); break;
+		case KEY_TYPE_FLOAT: RETVAL= newSVnv(item->keyunion.nkey); break;
+		default: croak("BUG: un-handled key_type");
+		}
+	OUTPUT:
+		RETVAL
+
+SV *
+value(item, newval=NULL)
+	struct TreeRBXS_item *item
+	SV *newval;
+	CODE:
+		if (newval)
+			sv_setsv(item->value, newval);
+		RETVAL= SvREFCNT_inc_simple_NN(item->value);
+	OUTPUT:
+		RETVAL
+
+struct TreeRBXS_item *
+prev(item)
+	struct TreeRBXS_item *item
+	INIT:
+		rbtree_node_t *node= rbtree_node_prev(&item->rbnode);
+	CODE:
+		RETVAL= node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
+	OUTPUT:
+		RETVAL
+
+struct TreeRBXS_item *
+next(item)
+	struct TreeRBXS_item *item
+	INIT:
+		rbtree_node_t *node= rbtree_node_next(&item->rbnode);
+	CODE:
+		RETVAL= node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
+	OUTPUT:
+		RETVAL
+
+struct TreeRBXS_item *
+parent(item)
+	struct TreeRBXS_item *item
+	CODE:
+		RETVAL= item->rbnode.parent->count? GET_TreeRBXS_item_FROM_rbnode(item->rbnode.parent) : NULL;
+	OUTPUT:
+		RETVAL
+
+struct TreeRBXS_item *
+left(item)
+	struct TreeRBXS_item *item
+	CODE:
+		RETVAL= item->rbnode.left->count? GET_TreeRBXS_item_FROM_rbnode(item->rbnode.left) : NULL;
+	OUTPUT:
+		RETVAL
+
+struct TreeRBXS_item *
+right(item)
+	struct TreeRBXS_item *item
+	CODE:
+		RETVAL= item->rbnode.right->count? GET_TreeRBXS_item_FROM_rbnode(item->rbnode.right) : NULL;
+	OUTPUT:
+		RETVAL
+
+int
+color(item)
+	struct TreeRBXS_item *item
+	CODE:
+		RETVAL= item->rbnode.color;
+	OUTPUT:
+		RETVAL
+
+IV
+count(item)
+	struct TreeRBXS_item *item
+	CODE:
+		RETVAL= item->rbnode.count;
+	OUTPUT:
+		RETVAL
+
+#-----------------------------------------------------------------------------
+#  Constants
+#
 
 BOOT:
 	HV* stash= gv_stashpvn("Tree::RB::XS", 12, 1);

@@ -95,6 +95,75 @@ allows duplicate keys, this will replace all nodes having this key.
 Insert a new node into the tree, and return the index at which it was inserted.
 If the node already existed, this returns -1 and does not change the tree.
 
+=head2 min_node
+
+Get the tree node with minimum key.  Returns undef if the tree is empty.
+
+Alias: C<min>
+
+=head2 max_node
+
+Get the tree node with maximum key.  Returns undef if the tree is empty.
+
+Alias: C<max>
+
+=head2 nth_node
+
+Get the Nth node in the sequence from min to max.  N is a zero-based index.
+You may use negative numbers to count down form max.
+
+Alias: C<nth>
+
+=cut
+
+*min= *min_node;
+*max= *max_node;
+*nth= *nth_node;
+
+=head1 NODE OBJECTS
+
+The nodes returned by the methods above have the following attributes:
+
+=over 10
+
+=item key
+
+The sort key.  Read-only, but if you supplied a reference and you modify what it
+points to, you will break the sorting of the tree.
+
+=item value
+
+The data associated with the node.  Read/Write.
+
+=item prev
+
+The previous node in the sequence of keys.
+
+=item next
+
+The next node in the sequence of keys.
+
+=item left
+
+The left sub-tree.
+
+=item right
+
+The right sub-tree.
+
+=item parent
+
+The parent node, if any.
+
+=item color
+
+0 = black, 1 = red.
+
+=item count
+
+The number of items in the tree rooted at this node (inclusive)
+
+=back
 
 =head1 EXPORTS
 
