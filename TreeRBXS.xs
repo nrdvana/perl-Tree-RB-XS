@@ -112,6 +112,11 @@ static void TreeRBXS_item_free(struct TreeRBXS_item *item) {
 }
 
 static void TreeRBXS_item_detach_owner(struct TreeRBXS_item* item) {
+	/* the MAGIC of owner doens't need changed because the only time this gets called
+	   is when something else is taking care of that. */
+	//if (item->owner != NULL) {
+	//	TreeRBXS_set_magic_item(item->owner, NULL);
+	//}
 	item->owner= NULL;
 	/* The tree is the other 'owner' of the node.  If the item is not in the tree,
 	   then this was the last reference, and it needs freed. */
@@ -119,8 +124,10 @@ static void TreeRBXS_item_detach_owner(struct TreeRBXS_item* item) {
 		TreeRBXS_item_free(item);
 }
 
-static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBXS *tree) {
+static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBXS *unused) {
 	//warn("detach tree %p %p key %d", item, tree, (int) item->keyunion.ikey);
+	if (rbtree_node_is_in_tree(&item->rbnode))
+		rbtree_node_prune(&item->rbnode);
 	/* The item could be owned by a tree or by a Node/Iterator, or both.
 	   If the tree releases the reference, the Node/Iterator will be the owner. */
 	if (!item->owner)
@@ -130,7 +137,7 @@ static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBX
 
 static void TreeRBXS_destroy(struct TreeRBXS *tree) {
 	//warn("TreeRBXS_destroy");
-	rbtree_clear(&tree->root_sentinel, (void (*)(void *, void *)) &TreeRBXS_item_detach_tree, -OFS_TreeRBXS_item_FIELD_rbnode, tree);
+	rbtree_clear(&tree->root_sentinel, (void (*)(void *, void *)) &TreeRBXS_item_detach_tree, -OFS_TreeRBXS_item_FIELD_rbnode, NULL);
 	if (tree->tmp_item) {
 		TreeRBXS_item_free(tree->tmp_item);
 		tree->tmp_item= NULL;
@@ -317,8 +324,8 @@ static void TreeRBXS_set_magic_item(SV *obj, struct TreeRBXS_item *item) {
 		if (item->owner == sv)
 			return;
 		/* detach item from old owner */
-        for (magic= SvMAGIC(item->owner); magic; magic = magic->mg_moremagic)
-            if (magic->mg_type == PERL_MAGIC_ext && magic->mg_virtual == &TreeRBXS_item_magic_vt) {
+		for (magic= SvMAGIC(item->owner); magic; magic = magic->mg_moremagic)
+			if (magic->mg_type == PERL_MAGIC_ext && magic->mg_virtual == &TreeRBXS_item_magic_vt) {
 				magic->mg_ptr= NULL;
 				break;
 			}
@@ -329,11 +336,14 @@ static void TreeRBXS_set_magic_item(SV *obj, struct TreeRBXS_item *item) {
 	/* If the object already owns one item, need to release that reference, possibly freeing the item */
 	if (SvMAGICAL(sv)) {
         /* Iterate magic attached to this scalar, looking for one with our vtable */
-        for (magic= SvMAGIC(sv); magic; magic = magic->mg_moremagic)
-            if (magic->mg_type == PERL_MAGIC_ext && magic->mg_virtual == &TreeRBXS_item_magic_vt) {
-                /* If found, the mg_ptr points to the fields structure. */
-                if (magic->mg_ptr)
-					TreeRBXS_item_detach_owner((struct TreeRBXS_item*) magic->mg_ptr);
+		for (magic= SvMAGIC(sv); magic; magic = magic->mg_moremagic)
+			if (magic->mg_type == PERL_MAGIC_ext && magic->mg_virtual == &TreeRBXS_item_magic_vt) {
+				/* If found, the mg_ptr points to the fields structure. */
+				if (magic->mg_ptr) {
+					olditem= (struct TreeRBXS_item*) magic->mg_ptr;
+					olditem->owner= NULL; // set to NULL first to prevent calling back into this function
+					TreeRBXS_item_detach_owner(olditem);
+				}
 				/* replace it with a new pointer */
 				magic->mg_ptr= (char*) item;
 				return;
@@ -556,6 +566,75 @@ get(tree, key)
 		XSRETURN(1);
 
 struct TreeRBXS_item *
+get_node(tree, key)
+	struct TreeRBXS *tree
+	SV *key
+	INIT:
+		struct TreeRBXS_item stack_item;
+		rbtree_node_t *node;
+		int cmp;
+	CODE:
+		if (!SvOK(key))
+			croak("Can't use undef as a key");
+		memset(&stack_item, 0, sizeof(stack_item));
+		switch (tree->key_type) {
+		case KEY_TYPE_STR:
+		case KEY_TYPE_ANY:   stack_item.keyunion.skey= key;       break;
+		case KEY_TYPE_INT:   stack_item.keyunion.ikey= SvIV(key); break;
+		case KEY_TYPE_FLOAT: stack_item.keyunion.nkey= SvNV(key); break;
+		default:             croak("BUG: unhandled key_type");
+		}
+		node= rbtree_find_nearest(
+			&tree->root_sentinel,
+			&stack_item, // The item *is* the key that gets passed to the compare function
+			(int(*)(void*,void*,void*)) tree->compare,
+			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+			&cmp);
+		RETVAL= (node && cmp == 0)? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
+	OUTPUT:
+		RETVAL
+
+IV
+delete(tree, key)
+	struct TreeRBXS *tree
+	SV *key
+	INIT:
+		struct TreeRBXS_item stack_item, *item;
+		rbtree_node_t *node, *next;
+		size_t count, i;
+	CODE:
+		if (!SvOK(key))
+			croak("Can't use undef as a key");
+		memset(&stack_item, 0, sizeof(stack_item));
+		stack_item.key_type= tree->key_type;
+		switch (tree->key_type) {
+		case KEY_TYPE_STR:
+		case KEY_TYPE_ANY:   stack_item.keyunion.skey= key;       break;
+		case KEY_TYPE_INT:   stack_item.keyunion.ikey= SvIV(key); break;
+		case KEY_TYPE_FLOAT: stack_item.keyunion.nkey= SvNV(key); break;
+		default:             croak("BUG: unhandled key_type");
+		}
+		if (rbtree_find_all(
+			&tree->root_sentinel,
+			&stack_item,
+			(int(*)(void*,void*,void*)) tree->compare,
+			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+			&node, NULL, &count)
+		) {
+			for (i= 0; i < count && node; i++) {
+				item= GET_TreeRBXS_item_FROM_rbnode(node);
+				node= rbtree_node_next(node);
+				TreeRBXS_item_detach_tree(item, tree);
+			}
+			RETVAL= i;
+		}
+		else {
+			RETVAL= 0;
+		}
+	OUTPUT:
+		RETVAL
+
+struct TreeRBXS_item *
 min_node(tree)
 	struct TreeRBXS *tree
 	INIT:
@@ -643,7 +722,8 @@ struct TreeRBXS_item *
 parent(item)
 	struct TreeRBXS_item *item
 	CODE:
-		RETVAL= item->rbnode.parent->count? GET_TreeRBXS_item_FROM_rbnode(item->rbnode.parent) : NULL;
+		RETVAL= rbtree_node_is_in_tree(&item->rbnode) && item->rbnode.parent->count?
+			GET_TreeRBXS_item_FROM_rbnode(item->rbnode.parent) : NULL;
 	OUTPUT:
 		RETVAL
 
@@ -651,7 +731,8 @@ struct TreeRBXS_item *
 left(item)
 	struct TreeRBXS_item *item
 	CODE:
-		RETVAL= item->rbnode.left->count? GET_TreeRBXS_item_FROM_rbnode(item->rbnode.left) : NULL;
+		RETVAL= rbtree_node_is_in_tree(&item->rbnode) && item->rbnode.left->count?
+			GET_TreeRBXS_item_FROM_rbnode(item->rbnode.left) : NULL;
 	OUTPUT:
 		RETVAL
 
@@ -659,11 +740,12 @@ struct TreeRBXS_item *
 right(item)
 	struct TreeRBXS_item *item
 	CODE:
-		RETVAL= item->rbnode.right->count? GET_TreeRBXS_item_FROM_rbnode(item->rbnode.right) : NULL;
+		RETVAL= rbtree_node_is_in_tree(&item->rbnode) && item->rbnode.right->count?
+			GET_TreeRBXS_item_FROM_rbnode(item->rbnode.right) : NULL;
 	OUTPUT:
 		RETVAL
 
-int
+IV
 color(item)
 	struct TreeRBXS_item *item
 	CODE:
@@ -676,6 +758,18 @@ count(item)
 	struct TreeRBXS_item *item
 	CODE:
 		RETVAL= item->rbnode.count;
+	OUTPUT:
+		RETVAL
+
+IV
+prune(item)
+	struct TreeRBXS_item *item
+	CODE:
+		RETVAL= 0;
+		if (rbtree_node_is_in_tree(&item->rbnode)) {
+			TreeRBXS_item_detach_tree(item, NULL /*unused*/);
+			RETVAL= 1;
+		}
 	OUTPUT:
 		RETVAL
 

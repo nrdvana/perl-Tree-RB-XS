@@ -14,7 +14,19 @@ our @EXPORT_OK= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_STR );
 
   my $tree= Tree::RB::XS->new;
   $tree->put(a => 1);
-  $tree->put(b => 2);
+  say $tree->get('a');
+  $tree->delete('a');
+  
+  # optimize for integer comparisons
+  $tree= Tree::RB::XS->new(key_type => KEY_TYPE_INT);
+  $tree->put(1 => "x");
+  
+  # inspect the node objects
+  say $tree->min->key;
+  say $tree->nth(0)->key;
+  my $node= $tree->min;
+  my $next= $node->next;
+  $node->prune;
 
 =head1 DESCRIPTION
 

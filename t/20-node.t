@@ -33,6 +33,18 @@ is( $tree->min_node->key, 'a', 'key from type ANY' );
 
 $tree= Tree::RB::XS->new(key_type => KEY_TYPE_FLOAT);
 $tree->put(.5 => 1);
-is( $tree->min_node->key, 0.5, 'key form type FLOAT' );
+is( $tree->min_node->key, 0.5, 'key from type FLOAT' );
+
+$tree->put(.75 => 2);
+is( $tree->size, 2, '2 nodes before prune' );
+ok( my $half= $tree->get_node(.5) );
+is( $half->next, $tree->max_node, 'has next' );
+is( $half->prune, 1, 'remove .5' );
+is( $half->next, undef, 'no longer has next' );
+is( $half->prune, 0, 'already removed' );
+is( $tree->size, 1, '1 node after prune' );
+is( $tree->min->key, .75 );
+is( $tree->min->prune, 1, 'remove last node' );
+is( $tree->size, 0, 'tree empty' );
 
 done_testing;
