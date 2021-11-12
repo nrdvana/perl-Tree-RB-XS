@@ -74,9 +74,27 @@ Returns the number of elements in the tree.
 
 =head1 METHODS
 
-=head2 insert
+=head2 get
+
+  my $val= $tree->get($key);
+
+Fetch a value form the tree, by its key.  Unlike L<Tree::RB/get>, this always
+returns a single value, regardless of list context, and does not accept options
+for how to find nearby keys.
 
 =head2 put
+
+  my $old_val= $tree->put($key, $new_val);
+
+Associate the key with a new value.  If the key previously existed, this returns
+the old value, and updates the tree to reference the new value.  If the tree
+allows duplicate keys, this will replace all nodes having this key.
+
+=head2 insert
+
+Insert a new node into the tree, and return the index at which it was inserted.
+If the node already existed, this returns -1 and does not change the tree.
+
 
 =head1 EXPORTS
 

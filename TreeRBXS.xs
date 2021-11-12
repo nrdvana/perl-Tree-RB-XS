@@ -426,7 +426,7 @@ insert(tree, key, val)
 	OUTPUT:
 		RETVAL
 
-SV*
+void
 put(tree, key, val)
 	struct TreeRBXS *tree
 	SV *key
@@ -436,11 +436,11 @@ put(tree, key, val)
 		rbtree_node_t *first= NULL, *last= NULL;
 		int cmp;
 		size_t count;
-	CODE:
+	PPCODE:
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
 		TreeRBXS_init_tmp_item(tree, key, val);
-		RETVAL= &PL_sv_undef;
+		ST(0)= &PL_sv_undef;
 		if (rbtree_find_all(
 			&tree->root_sentinel,
 			tree->tmp_item, // The item *is* the key that gets passed to the compare function
@@ -460,7 +460,7 @@ put(tree, key, val)
 			item= GET_TreeRBXS_item_FROM_rbnode(last);
 			/* already made a copy of the value above, into the tree's tmp_value.
 			   In case that was expensive, use that new SV and throw away the SV of the current node */
-			if (item->value) RETVAL= item->value;
+			if (item->value) ST(0)= sv_2mortal(item->value);
 			item->value= tree->tmp_item->value;
 			tree->tmp_item->value= NULL;
 		}
@@ -475,8 +475,39 @@ put(tree, key, val)
 			/* success.  The item is no longer a temporary. */
 			tree->tmp_item= NULL;
 		}
-	OUTPUT:
-		RETVAL
+		XSRETURN(1);
+
+void
+get(tree, key)
+	struct TreeRBXS *tree
+	SV *key
+	INIT:
+		struct TreeRBXS_item stack_item, *item;
+		rbtree_node_t *node;
+		int cmp;
+	PPCODE:
+		if (!SvOK(key))
+			croak("Can't use undef as a key");
+		memset(&stack_item, 0, sizeof(stack_item));
+		switch (tree->key_type) {
+		case KEY_TYPE_STR:
+		case KEY_TYPE_ANY:   stack_item.keyunion.skey= key;       break;
+		case KEY_TYPE_INT:   stack_item.keyunion.ikey= SvIV(key); break;
+		case KEY_TYPE_FLOAT: stack_item.keyunion.nkey= SvNV(key); break;
+		default:             croak("BUG: unhandled key_type");
+		}
+		ST(0)= &PL_sv_undef;
+		node= rbtree_find_nearest(
+			&tree->root_sentinel,
+			&stack_item, // The item *is* the key that gets passed to the compare function
+			(int(*)(void*,void*,void*)) tree->compare,
+			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+			&cmp);
+		if (node && cmp == 0) {
+			item= GET_TreeRBXS_item_FROM_rbnode(node);
+			ST(0)= item->value;
+		}
+		XSRETURN(1);
 
 BOOT:
 	HV* stash= gv_stashpvn("Tree::RB::XS", 12, 1);
