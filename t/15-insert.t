@@ -10,6 +10,8 @@ subtest int_tree => sub {
 	for (1..1000) {
 		$tree->put(int(rand) => $_);
 	}
+	is( $tree->count, 1001, 'add 100 nodes' );
+	ok( $tree->_check_structure, 'structure OK' );
 	undef $tree; # test destructor
 };
 

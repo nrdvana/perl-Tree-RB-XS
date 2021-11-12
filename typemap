@@ -1,6 +1,11 @@
 TYPEMAP
 struct TreeRBXS*        O_TreeRBXS
+struct TreeRBXS_item*   O_TreeRBXS_item
 
 INPUT
 O_TreeRBXS
-    $var= TreeRBXS_obj_get_struct($arg, OR_DIE);
+    $var= TreeRBXS_get_magic_tree($arg, OR_DIE);
+
+INPUT
+O_TreeRBXS_item
+	$var= TreeRBXS_get_magic_item($arg, OR_DIE);

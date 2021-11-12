@@ -33,7 +33,9 @@ struct TreeRBXS {
 
 #define OFS_TreeRBXS_item_FIELD_rbnode ( ((char*) &(((struct TreeRBXS_item *)(void*)10000)->rbnode)) - ((char*)10000) )
 
+#define TREERBXS_ITEM_SKEY 1
 struct TreeRBXS_item {
+	SV *owner;
 	rbtree_node_t rbnode;
 	union itemkey_u {
 		IV ikey;
@@ -41,24 +43,37 @@ struct TreeRBXS_item {
 		SV *skey;
 	} keyunion;
 	SV *value;
+	int flags;
 };
 
-static void TreeRBXS_item_free(struct TreeRBXS_item *item, struct TreeRBXS *tree) {
-	switch (tree->key_type) {
-	case KEY_TYPE_ANY:
-	case KEY_TYPE_STR:
+static void TreeRBXS_item_free(struct TreeRBXS_item *item) {
+	if (item->flags & TREERBXS_ITEM_SKEY)
 		SvREFCNT_dec(item->keyunion.skey);
-		item->keyunion.skey= NULL;
-		break;
-	default: break;
-	}
+	if (item->value)
+		SvREFCNT_dec(item->value);
 	Safefree(item);
+}
+
+static void TreeRBXS_item_detach_owner(struct TreeRBXS_item* item) {
+	item->owner= NULL;
+	/* The tree is the other 'owner' of the node.  If the item is not in the tree,
+	   then this was the last reference, and it needs freed. */
+	if (!rbtree_node_is_in_tree(&item->rbnode))
+		TreeRBXS_item_free(item);
+}
+
+static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBXS *tree) {
+	/* The item could be owned by a tree or by a Node/Iterator, or both.
+	   If the tree releases the reference, the Node/Iterator will be the owner. */
+	if (!item->owner)
+		TreeRBXS_item_free(item);
+	/* Else the tree was the only owner, and the node needs freed */
 }
 
 static void TreeRBXS_destroy(struct TreeRBXS *tree) {
 	rbtree_clear(&tree->root_sentinel, (void (*)(void *, void *)) &TreeRBXS_item_free, -OFS_TreeRBXS_item_FIELD_rbnode, tree);
 	if (tree->tmp_item) {
-		TreeRBXS_item_free(tree->tmp_item, tree);
+		TreeRBXS_item_free(tree->tmp_item);
 		tree->tmp_item= NULL;
 	}
 }
@@ -112,6 +127,7 @@ static int TreeRBXS_magic_dup(pTHX_ MAGIC *mg, CLONE_PARAMS *param) {
 #else
 #define TreeRBXS_magic_dup 0
 #endif
+
 static MGVTBL TreeRBXS_magic_vt= {
 	0, /* get */
 	0, /* write */
@@ -125,16 +141,37 @@ static MGVTBL TreeRBXS_magic_vt= {
 #endif
 };
 
+static int TreeRBXS_item_magic_free(pTHX_ SV* sv, MAGIC* mg) {
+	if (mg->mg_ptr) {
+		TreeRBXS_item_detach_owner((struct TreeRBXS_item*) mg->mg_ptr);
+		mg->mg_ptr= NULL;
+	}
+	return 0;
+}
+
+static MGVTBL TreeRBXS_item_magic_vt= {
+	0, /* get */
+	0, /* write */
+	0, /* length */
+	0, /* clear */
+	TreeRBXS_item_magic_free,
+	0, /* copy */
+	TreeRBXS_magic_dup
+#ifdef MGf_LOCAL
+	,0
+#endif
+};
+
 /* Get TreeRBXS struct attached to a Perl SV Ref.
  * Use AUTOCREATE to attach magic if it wasn't present.
  * Use OR_DIE for a built-in croak() if the return value would be NULL.
  */
-static struct TreeRBXS* TreeRBXS_obj_get_struct(SV *obj, int create_flag) {
+static struct TreeRBXS* TreeRBXS_get_magic_tree(SV *obj, int flags) {
 	SV *sv;
 	MAGIC* magic;
     struct TreeRBXS *tree;
 	if (!sv_isobject(obj)) {
-		if (create_flag & OR_DIE)
+		if (flags & OR_DIE)
 			croak("Not an object");
 		return NULL;
 	}
@@ -146,7 +183,7 @@ static struct TreeRBXS* TreeRBXS_obj_get_struct(SV *obj, int create_flag) {
                 /* If found, the mg_ptr points to the fields structure. */
                 return (struct TreeRBXS*) magic->mg_ptr;
     }
-    if (create_flag & AUTOCREATE) {
+    if (flags & AUTOCREATE) {
         Newxz(tree, 1, struct TreeRBXS);
         magic= sv_magicext(sv, NULL, PERL_MAGIC_ext, &TreeRBXS_magic_vt, (const char*) tree, 0);
 #ifdef USE_ITHREADS
@@ -155,9 +192,73 @@ static struct TreeRBXS* TreeRBXS_obj_get_struct(SV *obj, int create_flag) {
 		rbtree_init_tree(&tree->root_sentinel, &tree->leaf_sentinel);
         return tree;
     }
-    else if (create_flag & OR_DIE)
+    else if (flags & OR_DIE)
         croak("Object lacks 'struct TreeRBXS' magic");
 	return NULL;
+}
+
+static struct TreeRBXS_item* TreeRBXS_get_magic_item(SV *obj, int flags) {
+	SV *sv;
+	MAGIC* magic;
+    struct TreeRBXS_item *item;
+	if (!sv_isobject(obj)) {
+		if (flags & OR_DIE)
+			croak("Not an object");
+		return NULL;
+	}
+	sv= SvRV(obj);
+	if (SvMAGICAL(sv)) {
+        /* Iterate magic attached to this scalar, looking for one with our vtable */
+        for (magic= SvMAGIC(sv); magic; magic = magic->mg_moremagic)
+            if (magic->mg_type == PERL_MAGIC_ext && magic->mg_virtual == &TreeRBXS_item_magic_vt)
+                /* If found, the mg_ptr points to the fields structure. */
+                return (struct TreeRBXS_item*) magic->mg_ptr;
+    }
+    if (flags & OR_DIE)
+        croak("Object lacks 'struct TreeRBXS_item' magic");
+	return NULL;
+}
+
+static void TreeRBXS_set_magic_item(SV *obj, struct TreeRBXS_item *item) {
+	SV *sv, *oldowner;
+	MAGIC* magic;
+	struct TreeRBXS_item *olditem;
+
+	if (!sv_isobject(obj))
+		croak("Not an object");
+	sv= SvRV(obj);
+
+	if (item->owner) {
+		/* does the object already own this item? */
+		if (item->owner == sv)
+			return;
+		/* detach item from old owner */
+        for (magic= SvMAGIC(item->owner); magic; magic = magic->mg_moremagic)
+            if (magic->mg_type == PERL_MAGIC_ext && magic->mg_virtual == &TreeRBXS_item_magic_vt) {
+				magic->mg_ptr= NULL;
+				break;
+			}
+	}
+
+	item->owner= obj;
+
+	/* If the object already owns one item, need to release that reference, possibly freeing the item */
+	if (SvMAGICAL(sv)) {
+        /* Iterate magic attached to this scalar, looking for one with our vtable */
+        for (magic= SvMAGIC(sv); magic; magic = magic->mg_moremagic)
+            if (magic->mg_type == PERL_MAGIC_ext && magic->mg_virtual == &TreeRBXS_item_magic_vt) {
+                /* If found, the mg_ptr points to the fields structure. */
+                if (magic->mg_ptr)
+					TreeRBXS_item_detach_owner((struct TreeRBXS_item*) magic->mg_ptr);
+				/* replace it with a new pointer */
+				magic->mg_ptr= (char*) item;
+				return;
+			}
+	}
+	magic= sv_magicext(sv, NULL, PERL_MAGIC_ext, &TreeRBXS_item_magic_vt, (char*) item, 0);
+#ifdef USE_ITHREADS
+	magic->mg_flags |= MGf_DUP;
+#endif
 }
 
 MODULE = Tree::RB::XS              PACKAGE = Tree::RB::XS
@@ -174,7 +275,7 @@ _init_tree(obj, key_type, compare_fn= NULL)
 			croak("_init_tree called on non-object");
 		if (key_type <= 0 || key_type > KEY_TYPE_MAX)
 			croak("invalid key_type");
-		tree= TreeRBXS_obj_get_struct(obj, AUTOCREATE|OR_DIE);
+		tree= TreeRBXS_get_magic_tree(obj, AUTOCREATE|OR_DIE);
 		if (tree->owner)
 			croak("Tree is already initialized");
 		tree->owner= SvRV(obj);
@@ -236,6 +337,7 @@ put(tree, key, val)
 		                         sv_setsv(item->keyunion.skey, key);
 		                     else
 		                         item->keyunion.skey= newSVsv(key);
+							 item->flags |= TREERBXS_ITEM_SKEY;
 		                     break;
 		case KEY_TYPE_INT:   item->keyunion.ikey= SvIV(key); break;
 		case KEY_TYPE_FLOAT: item->keyunion.nkey= SvNV(key); break;

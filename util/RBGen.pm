@@ -88,6 +88,8 @@ typedef struct ${ns}node {
 #endif
 } $nd;
 
+#define ${ns}node_is_in_tree(node) ((bool) (node)->count)
+
 /* Initialize a tree */
 $api void ${ns}init_tree( $nd *root_sentinel, $nd *leaf_sentinel );
 
