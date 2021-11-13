@@ -2,6 +2,10 @@
 use Test2::V0;
 use Tree::RB::XS qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_BSTR KEY_TYPE_USTR );
 
+# check dualvar behavior
+is( KEY_TYPE_ANY, 'KEY_TYPE_ANY', "enums stringify as text" );
+ok( KEY_TYPE_ANY == 1, "enums are still ints" );
+
 my $looks_like_tree= object sub {
 	prop isa => 'Tree::RB::XS';
 	call key_type => T();
@@ -43,5 +47,10 @@ subtest bstr_tree => sub {
 	is( $tree->key_type, KEY_TYPE_BSTR, 'key_type' );
 	undef $tree; # test destructor
 };
+
+subtest type_by_name => sub {
+	my $tree= Tree::RB::XS->new(key_type => 'KEY_TYPE_BSTR');
+	is( $tree->key_type, KEY_TYPE_BSTR, 'key_type' );
+};	
 
 done_testing;

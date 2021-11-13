@@ -14,6 +14,15 @@
 #define KEY_TYPE_USTR  6
 #define KEY_TYPE_MAX   6
 
+#define NEW_ENUM_DUALVAR(x) new_enum_dualvar(x, newSVpvs_share(#x))
+static SV * new_enum_dualvar(IV ival, SV *name) {
+	SvUPGRADE(name, SVt_PVNV);
+	SvIV_set(name, ival);
+	SvIOK_on(name);
+	SvREADONLY_on(name);
+	return name;
+}
+
 /* The core Red/Black algorithm which operates on rbtree_node_t */
 #include "rbtree.h"
 
@@ -811,11 +820,11 @@ prune(item)
 
 BOOT:
 	HV* stash= gv_stashpvn("Tree::RB::XS", 12, 1);
-	newCONSTSUB(stash, "KEY_TYPE_ANY",   newSViv(KEY_TYPE_ANY));
-	newCONSTSUB(stash, "KEY_TYPE_INT",   newSViv(KEY_TYPE_INT));
-	newCONSTSUB(stash, "KEY_TYPE_FLOAT", newSViv(KEY_TYPE_FLOAT));
-	newCONSTSUB(stash, "KEY_TYPE_USTR",  newSViv(KEY_TYPE_USTR));
-	newCONSTSUB(stash, "KEY_TYPE_BSTR",  newSViv(KEY_TYPE_BSTR));
-	newCONSTSUB(stash, "KEY_TYPE_CLAIM", newSViv(KEY_TYPE_CLAIM));
+	newCONSTSUB(stash, "KEY_TYPE_ANY",   NEW_ENUM_DUALVAR(KEY_TYPE_ANY));
+	newCONSTSUB(stash, "KEY_TYPE_INT",   NEW_ENUM_DUALVAR(KEY_TYPE_INT));
+	newCONSTSUB(stash, "KEY_TYPE_FLOAT", NEW_ENUM_DUALVAR(KEY_TYPE_FLOAT));
+	newCONSTSUB(stash, "KEY_TYPE_USTR",  NEW_ENUM_DUALVAR(KEY_TYPE_USTR));
+	newCONSTSUB(stash, "KEY_TYPE_BSTR",  NEW_ENUM_DUALVAR(KEY_TYPE_BSTR));
+	newCONSTSUB(stash, "KEY_TYPE_CLAIM", NEW_ENUM_DUALVAR(KEY_TYPE_CLAIM));
 
 PROTOTYPES: DISABLE
