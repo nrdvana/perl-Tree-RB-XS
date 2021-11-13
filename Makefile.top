@@ -19,6 +19,14 @@ BEGIN {
     }
 }
 
+# Write out the rbtree.h and rbtree.c files
+use FindBin;
+use lib "$FindBin::Bin/util";
+use RBGen;
+RBGen->new(namespace => 'rbtree_')
+    ->write_api("$FindBin::Bin/rbtree.h")
+    ->write_impl("$FindBin::Bin/rbtree.c");
+
 my $dep= ExtUtils::Depends->new('Tree::RB::XS');
 
 $dep->add_c('rbtree.c');
