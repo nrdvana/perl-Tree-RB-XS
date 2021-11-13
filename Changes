@@ -1,3 +1,9 @@
+Version 0.00_02 - 2021-11-13
+
+  - Enhanced string-key performance using KEY_TYPE_BSTR and
+    KEY_TYPE_USTR.  KEY_TYPE_STR is removed.
+  - Various distribution fixes, documentation, etc.
+
 Version 0.00_01 - 2021-11-12
 
   - Initial release, with partial compatibility to Tree::RB
