@@ -64,6 +64,7 @@ sub new {
 	my %options= @_ == 1 && ref $_[0] eq 'CODE'? ( compare_fn => $_[0] ) : @_;
 	my $self= bless \%options, $class;
 	$self->_init_tree($self->key_type, $self->compare_fn);
+	$self->allow_duplicates(1) if delete $self->{allow_duplicates};
 	$self;
 }
 
@@ -77,8 +78,15 @@ The optional coderef that will be called each time keys need compared.
 
 =cut
 
-sub key_type { $_[0]{key_type} || Tree::RB::XS::KEY_TYPE_STR() }
+sub key_type { $_[0]{key_type} || KEY_TYPE_STR() }
 sub compare_fn { $_[0]{compare_fn} }
+
+=head2 allow_duplicates
+
+Boolean, read/write.  Controls whether L</insert> will allow additional nodes with
+keys that already exist in the tree.  This does not change the behavior of L</put>,
+only L</insert>.  If you set this to false, it does not remove duplicates that
+already existed.  The initial value is false.
 
 =head2 size
 
@@ -93,6 +101,10 @@ Returns the number of elements in the tree.
 Fetch a value form the tree, by its key.  Unlike L<Tree::RB/get>, this always
 returns a single value, regardless of list context, and does not accept options
 for how to find nearby keys.
+
+=head2 get_node
+
+Same as L</get>, but returns the node instead of the value.
 
 =head2 put
 
