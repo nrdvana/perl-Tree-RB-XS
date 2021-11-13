@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 use Test2::V0;
-use Tree::RB::XS qw( KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_STR KEY_TYPE_ANY );
+use Tree::RB::XS;
 use Time::HiRes 'time';
 
 # Perform a sequence of edits on both a hash and the tree, then

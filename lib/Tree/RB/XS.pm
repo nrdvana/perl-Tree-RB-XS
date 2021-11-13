@@ -8,7 +8,7 @@ use warnings;
 require XSLoader;
 XSLoader::load('Tree::RB::XS', $Tree::RB::XS::VERSION);
 use Exporter 'import';
-our @EXPORT_OK= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_STR );
+our @EXPORT_OK= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_BSTR KEY_TYPE_USTR );
 
 =head1 SYNOPSIS
 
@@ -20,6 +20,14 @@ our @EXPORT_OK= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_STR );
   # optimize for integer comparisons
   $tree= Tree::RB::XS->new(key_type => KEY_TYPE_INT);
   $tree->put(1 => "x");
+
+  # optimize for floating-point comparisons
+  $tree= Tree::RB::XS->new(key_type => KEY_TYPE_FLOAT);
+  $tree->put(0.125 => "x");
+
+  # optimize for byte strings
+  $tree= Tree::RB::XS->new(key_type => KEY_TYPE_BSTR);
+  $tree->put("test" => "x");
   
   # inspect the node objects
   say $tree->min->key;
@@ -43,17 +51,39 @@ Options:
 
 =over
 
+=item key_type
+
+This chooses how keys will be stored in this tree: C<KEY_TYPE_ANY> (the default),
+C<KEY_TYPE_INT>, C<KEY_TYPE_FLOAT>, C<KEY_TYPE_BSTR>, or C<KEY_TYPE_USTR>.
+Integers are of course the most efficient, followed by floats, followed by
+byte-strings and unicode-strings, followed by 'ANY' (which stores a whole
+perl scalar).  BSTR and USTR both save an internal copy of your key, so
+might be a bad idea if your keys are extremely large and nodes are frequently
+added to the tree.  The difference between BSTR and USTR is in how the bytes
+are initially copied out of the key during C</insert>, the former as raw bytes
+and the latter as UTF8 bytes.
+
+If the C<compare_fn> is a Perl coderef, this is forced to C<KEY_TYPE_ANY>.
+(it is best for performance to store a whole perl scalar if they are going
+to be passed to your comparison function over and over and over).
+
 =item compare_fn
 
 A coderef that compares its parameters in the same manner as C<cmp>.
 
-=item key_type
+If specified as a perl coderef, this forces C<< key_type => KEY_TYPE_ANY >>,
+since calling your callback over and over is most efficient if the scalars
+are stored as scalars.  Beware that using a custom coderef throws away most
+of the speed gains from using this XS variant over plain L<Tree::RB>.
 
-One of C<KEY_TYPE_STR> (the default), C<KEY_TYPE_INT>, or C<KEY_TYPE_ANY>.
-These are constants, exported by this module.  Integers are of course the
-most efficient, followed by strings, followed by 'ANY'.  Any means any perl
-scalar or reference, and for that you either need to specify a C<compare>
-coderef, or overload the 'cmp' operator for your key objects.
+If not provided, the default comparison for ANY uses perl's own C<cmp>
+operator, the default for BSTR and USTR are C's C<memcmp> function,
+and INT and FLOAT are the obvious numeric comparisons.  memcmp does not give
+correct unicode sorting, of course, but it's fast.
+
+TODO: It would be neat to have a collection of enumerated XS comparison
+functions available to choose from, to get custom behavior without the
+performance hit of a coderef callback.
 
 =back
 
@@ -78,7 +108,7 @@ The optional coderef that will be called each time keys need compared.
 
 =cut
 
-sub key_type { $_[0]{key_type} || KEY_TYPE_STR() }
+sub key_type { $_[0]{key_type} || KEY_TYPE_ANY() }
 sub compare_fn { $_[0]{compare_fn} }
 
 =head2 allow_duplicates
@@ -217,7 +247,9 @@ but all attributes linking to other nodes will become C<undef>.
 
 =item KEY_TYPE_FLOAT
 
-=item KEY_TYPE_STR
+=item KEY_TYPE_BSTR
+
+=item KEY_TYPE_USTR
 
 =back
 

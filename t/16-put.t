@@ -1,11 +1,9 @@
 #!/usr/bin/env perl
 use Test2::V0;
-use Tree::RB::XS qw( KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_STR KEY_TYPE_ANY );
+use Tree::RB::XS qw( KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_BSTR KEY_TYPE_ANY );
 use Time::HiRes 'time';
 
 my $node_cnt= $ENV{TREERBXS_TEST_NODE_COUNT} || 1000000;
-
-note "$_=$ENV{$_}" for grep /perl/i, keys %ENV;
 
 subtest int_tree => sub {
 	my $tree= Tree::RB::XS->new(key_type => KEY_TYPE_INT);
@@ -36,7 +34,7 @@ subtest float_tree => sub {
 };
 
 subtest str_tree => sub {
-	my $tree= Tree::RB::XS->new(key_type => KEY_TYPE_STR);
+	my $tree= Tree::RB::XS->new(key_type => KEY_TYPE_BSTR);
 	is( $tree->put(x => 1), undef, 'put new key returns undef' );
 	is( $tree->size, 1, 'size=1' );
 	is( $tree->put(y => 2), undef, 'put new key returns undef' );

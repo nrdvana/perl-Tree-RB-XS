@@ -5,11 +5,14 @@
 
 #define AUTOCREATE 1
 #define OR_DIE 2
-#define KEY_TYPE_ANY 1
-#define KEY_TYPE_INT 2
-#define KEY_TYPE_FLOAT 3
-#define KEY_TYPE_STR 4
-#define KEY_TYPE_MAX 4
+
+#define KEY_TYPE_ANY   1
+#define KEY_TYPE_CLAIM 2
+#define KEY_TYPE_INT   3
+#define KEY_TYPE_FLOAT 4
+#define KEY_TYPE_BSTR  5
+#define KEY_TYPE_USTR  6
+#define KEY_TYPE_MAX   6
 
 /* The core Red/Black algorithm which operates on rbtree_node_t */
 #include "rbtree.h"
@@ -28,7 +31,6 @@ struct TreeRBXS {
 	SV *compare_callback;          // user-supplied compare.  May be NULL, but can never be changed.
 	rbtree_node_t root_sentinel;   // parent-of-root, used by rbtree implementation.
 	rbtree_node_t leaf_sentinel;   // dummy node used by rbtree implementation.
-	struct TreeRBXS_item *tmp_item;// scratch space used by insert()
 };
 
 #define OFS_TreeRBXS_item_FIELD_rbnode ( ((char*) &(((struct TreeRBXS_item *)(void*)10000)->rbnode)) - ((char*)10000) )
@@ -43,11 +45,19 @@ struct TreeRBXS_item {
 	union itemkey_u {     // key variations are overlapped to save space
 		IV ikey;
 		NV nkey;
-		SV *skey;         // This Perl SV is only valid if  (flags & TREERBXS_ITEM_SKEY)
+		const char *ckey;
+		SV *svkey;
 	} keyunion;
 	SV *value;            // value will be set unless struct is just used as a search key
-	int key_type: 4,
-		flags: 28;
+	size_t key_type: 4,
+#if SIZE_MAX == 0xFFFFFFFF
+#define CKEYLEN_MAX ((((size_t)1)<<28)-1)
+	       ckeylen: 28;
+#else
+#define CKEYLEN_MAX ((((size_t)1)<<60)-1)
+	       ckeylen: 60;
+#endif
+	char extra[];
 };
 
 static void TreeRBXS_assert_structure(struct TreeRBXS *tree) {
@@ -56,56 +66,91 @@ static void TreeRBXS_assert_structure(struct TreeRBXS *tree) {
 	if (!tree->owner) croak("no owner");
 	if (tree->key_type < 0 || tree->key_type > KEY_TYPE_MAX) croak("bad key_type");
 	if (!tree->compare) croak("no compare function");
-	if (err= rbtree_check_structure(&tree->root_sentinel, (int(*)(void*,void*,void*)) tree->compare, tree, -OFS_TreeRBXS_item_FIELD_rbnode))
+	if ((err= rbtree_check_structure(&tree->root_sentinel, (int(*)(void*,void*,void*)) tree->compare, tree, -OFS_TreeRBXS_item_FIELD_rbnode)))
 		croak("tree structure damaged: %d", err);
-	if (tree->tmp_item) {
-		if (rbtree_node_is_in_tree(&tree->tmp_item->rbnode))
-			croak("temp node added to tree");
-	}
 	//warn("Tree is healthy");
 }
 
 /* For insert/put, there needs to be a node created before it can be
  * inserted.  But if the insert fails, the item needs cleaned up.
- * By using a temp item attached to the tree, it can be re-used if
- * the insert fails and save a little overhead and messy exception handling.
+ * This initializes a temporary incomplete item on the stack that can be
+ * used for searching without the expense of allocating buffers etc.
+ * The temporary item does not require any destructor/cleanup.
  */
-static void TreeRBXS_init_tmp_item(struct TreeRBXS *tree, SV *key, SV *value) {
-	/* Prepare a new item with the key initialized */
-	struct TreeRBXS_item *item= tree->tmp_item;
-	if (item) {
-		memset(&item->rbnode, 0, sizeof(item->rbnode));
-	} else {
-		Newxz(item, 1, struct TreeRBXS_item);
-		tree->tmp_item= item;
-		item->key_type= tree->key_type;
-	}
-	/* key_type can never change, so it is safe to assume that previous init
-	 * of the item is the same as what would occur now.
-	 */
-	switch (tree->key_type) {
-	case KEY_TYPE_STR:
+static void TreeRBXS_init_tmp_item(struct TreeRBXS_item *item, struct TreeRBXS *tree, SV *key, SV *value) {
+	size_t len= 0;
+
+	// all fields should start NULL just to be safe
+	memset(item, 0, sizeof(*item));
+	// copy key type from tree
+	item->key_type= tree->key_type;
+	// set up the keys.  
+	switch (item->key_type) {
 	case KEY_TYPE_ANY:
-		if (item->keyunion.skey)
-			sv_setsv(item->keyunion.skey, key);
-		else
-			item->keyunion.skey= newSVsv(key);
-		break;
+	case KEY_TYPE_CLAIM: item->keyunion.svkey= key; break;
 	case KEY_TYPE_INT:   item->keyunion.ikey= SvIV(key); break;
 	case KEY_TYPE_FLOAT: item->keyunion.nkey= SvNV(key); break;
+	// STR and BSTR assume that the 'key' SV has a longer lifespan than the use of the tmp item,
+	// and directly reference the PV pointer.  The insert and search algorithms should not be
+	// calling into Perl for their entire execution.
+	case KEY_TYPE_USTR:
+		item->keyunion.ckey= SvPVutf8(key, len);
+		if (0)
+	case KEY_TYPE_BSTR:
+			item->keyunion.ckey= SvPVbyte(key, len);
+		// the ckeylen is a bit field, so can't go the full range of size_t
+		if (len > CKEYLEN_MAX)
+			croak("String length %ld exceeds maximum %ld for optimized key_type", (long)len, CKEYLEN_MAX);
+		item->ckeylen= len;
+		break;
 	default:
 		croak("BUG: un-handled key_type");
 	}
-	if (item->value)
-		sv_setsv(item->value, value);
-	else
-		item->value= newSVsv(value);
+	item->value= value;
+}
+
+/* When insert has decided that the temporary node is permitted ot be inserted,
+ * this function allocates a real item struct with its own reference counts
+ * and buffer data, etc.
+ */
+static struct TreeRBXS_item * TreeRBXS_new_item_from_tmp_item(struct TreeRBXS_item *src) {
+	struct TreeRBXS_item *dst;
+	size_t len;
+	/* If the item references a string that is nor managed by a SV,
+	  copy that into the space at the end of the allocated block. */
+	if (src->key_type == KEY_TYPE_USTR || src->key_type == KEY_TYPE_BSTR) {
+		len= src->ckeylen;
+		Newxc(dst, sizeof(struct TreeRBXS_item) + len + 1, char, struct TreeRBXS_item);
+		memset(dst, 0, sizeof(struct TreeRBXS_item));
+		memcpy(dst->extra, src->keyunion.ckey, len);
+		dst->extra[len]= '\0';
+		dst->keyunion.ckey= dst->extra;
+		dst->ckeylen= src->ckeylen;
+	}
+	else {
+		Newxz(dst, 1, struct TreeRBXS_item);
+		switch (src->key_type) {
+		case KEY_TYPE_ANY:   dst->keyunion.svkey= newSVsv(src->keyunion.svkey);
+			if (0)
+		case KEY_TYPE_CLAIM: dst->keyunion.svkey= SvREFCNT_inc(src->keyunion.svkey);
+			SvREADONLY_on(dst->keyunion.svkey);
+			break;
+		case KEY_TYPE_INT:   dst->keyunion.ikey=  src->keyunion.ikey; break;
+		case KEY_TYPE_FLOAT: dst->keyunion.nkey=  src->keyunion.nkey; break;
+		default:
+			croak("BUG: un-handled key_type %d", src->key_type);
+		}
+	}
+	dst->key_type= src->key_type;
+	dst->value= newSVsv(src->value);
+	return dst;
 }
 
 static void TreeRBXS_item_free(struct TreeRBXS_item *item) {
-	if (item->key_type == KEY_TYPE_STR || item->key_type == KEY_TYPE_ANY)
-		if (item->keyunion.skey)
-			SvREFCNT_dec(item->keyunion.skey);
+	switch (item->key_type) {
+	case KEY_TYPE_ANY:
+	case KEY_TYPE_CLAIM: SvREFCNT_dec(item->keyunion.svkey); break;
+	}
 	if (item->value)
 		SvREFCNT_dec(item->value);
 	Safefree(item);
@@ -138,42 +183,46 @@ static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBX
 static void TreeRBXS_destroy(struct TreeRBXS *tree) {
 	//warn("TreeRBXS_destroy");
 	rbtree_clear(&tree->root_sentinel, (void (*)(void *, void *)) &TreeRBXS_item_detach_tree, -OFS_TreeRBXS_item_FIELD_rbnode, NULL);
-	if (tree->tmp_item) {
-		TreeRBXS_item_free(tree->tmp_item);
-		tree->tmp_item= NULL;
-	}
 	if (tree->compare_callback)
 		SvREFCNT_dec(tree->compare_callback);
 }
 
+// Compare integers which were both already decoded from the original SVs
 static int TreeRBXS_cmp_int(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
 	//warn("  int compare %p (%d) <=> %p (%d)", a, (int)a->keyunion.ikey, b, (int)b->keyunion.ikey);
 	IV diff= a->keyunion.ikey - b->keyunion.ikey;
 	return diff < 0? -1 : diff > 0? 1 : 0; /* shrink from IV to int might lose upper bits */
 }
-static int TreeRBXS_cmp_str(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
-	return sv_cmp(a->keyunion.skey, b->keyunion.skey);
-}
+
+// Compare floats which were both already decoded form the original SVs
 static int TreeRBXS_cmp_float(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
 	NV diff= a->keyunion.nkey - b->keyunion.nkey;
 	return diff < 0? -1 : diff > 0? 1 : 0;
 }
+
+// Compare C strings sing memcmp, on raw byte values.  This isn't correct for UTF-8 but is a tradeoff for speed.
+static int TreeRBXS_cmp_memcmp(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
+	size_t alen= a->ckeylen, blen= b->ckeylen;
+	int cmp= memcmp(a->keyunion.ckey, b->keyunion.ckey, alen < blen? alen : blen);
+	return cmp? cmp : alen < blen? -1 : alen > blen? 1 : 0;
+}
+
+// Compare SV items using Perl's 'cmp' operator
 static int TreeRBXS_cmp_perl(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
+	return sv_cmp(a->keyunion.svkey, b->keyunion.svkey);
+}
+
+// Compare SV items using a user-supplied perl callback
+static int TreeRBXS_cmp_perl_cb(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
 	int ret;
     dSP;
-	//warn("compare(%s:%s, %s:%s)",
-	//	SvPV_nolen(a->flags&TREERBXS_ITEM_SKEY? a->keyunion.skey : sv_2mortal(newSViv(a->keyunion.ikey))),
-	//	SvPV_nolen(a->value),
-	//	SvPV_nolen(b->flags&TREERBXS_ITEM_SKEY? b->keyunion.skey : sv_2mortal(newSViv(b->keyunion.ikey))),
-	//	SvPV_nolen(b->value)
-	//);
     ENTER;
 	// There are a max of $tree_depth comparisons to do during an insert or search,
 	// so should be safe to not free temporaries for a little bit.
     PUSHMARK(SP);
     EXTEND(SP, 2);
-    PUSHs(a->keyunion.skey);
-    PUSHs(b->keyunion.skey);
+    PUSHs(a->keyunion.svkey);
+    PUSHs(b->keyunion.svkey);
     PUTBACK;
     if (call_sv(tree->compare_callback, G_SCALAR) != 1)
         croak("stack assertion failed");
@@ -286,7 +335,7 @@ static struct TreeRBXS* TreeRBXS_get_magic_tree(SV *obj, int flags) {
 static struct TreeRBXS_item* TreeRBXS_get_magic_item(SV *obj, int flags) {
 	SV *sv;
 	MAGIC* magic;
-    struct TreeRBXS_item *item;
+
 	if (!sv_isobject(obj)) {
 		if (flags & OR_DIE)
 			croak("Not an object");
@@ -311,7 +360,7 @@ static struct TreeRBXS_item* TreeRBXS_get_magic_item(SV *obj, int flags) {
 // If a different Perl SV owns this item, that reference is also removed.
 // If this Perl SV already owns this item, nothing happens.
 static void TreeRBXS_set_magic_item(SV *obj, struct TreeRBXS_item *item) {
-	SV *sv, *oldowner;
+	SV *sv;
 	MAGIC* magic;
 	struct TreeRBXS_item *olditem;
 
@@ -390,24 +439,28 @@ _init_tree(obj, key_type, compare_fn= NULL)
 		if (!sv_isobject(obj))
 			croak("_init_tree called on non-object");
 		if (key_type <= 0 || key_type > KEY_TYPE_MAX)
-			croak("invalid key_type");
+			croak("invalid key_type %d", key_type);
 		tree= TreeRBXS_get_magic_tree(obj, AUTOCREATE|OR_DIE);
 		if (tree->owner)
 			croak("Tree is already initialized");
 		tree->owner= SvRV(obj);
+		// If there is a user-supplied compare function, it mandates the use of
+		// KEY_TYPE_ANY no matter what the user asked for.
 		if (SvOK(compare_fn)) {
 			tree->compare_callback= compare_fn;
 			SvREFCNT_inc(tree->compare_callback);
-			tree->key_type= KEY_TYPE_ANY;
-			tree->compare= TreeRBXS_cmp_perl;
+			tree->key_type= key_type == KEY_TYPE_CLAIM? key_type : KEY_TYPE_ANY;
+			tree->compare= TreeRBXS_cmp_perl_cb;
 		}
 		else {
 			tree->key_type= key_type;
 			tree->compare=
 				  key_type == KEY_TYPE_INT? TreeRBXS_cmp_int
 				: key_type == KEY_TYPE_FLOAT? TreeRBXS_cmp_float
-				: key_type == KEY_TYPE_STR? TreeRBXS_cmp_str
-				: key_type == KEY_TYPE_ANY? TreeRBXS_cmp_str
+				: key_type == KEY_TYPE_USTR? TreeRBXS_cmp_memcmp
+				: key_type == KEY_TYPE_BSTR? TreeRBXS_cmp_memcmp
+				: key_type == KEY_TYPE_ANY? TreeRBXS_cmp_perl /* use Perl's cmp operator */
+				: key_type == KEY_TYPE_CLAIM? TreeRBXS_cmp_perl
 				: NULL;
 			if (!tree->compare) croak("Un-handled key comparison configuration");
 		}
@@ -446,21 +499,20 @@ insert(tree, key, val)
 	SV *key
 	SV *val
 	INIT:
-		struct TreeRBXS_item *item;
+		struct TreeRBXS_item stack_item, *item;
 		rbtree_node_t *hint= NULL;
 		int cmp;
 	CODE:
 		//TreeRBXS_assert_structure(tree);
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
-		TreeRBXS_init_tmp_item(tree, key, val);
-		item= tree->tmp_item;
+		TreeRBXS_init_tmp_item(&stack_item, tree, key, val);
 		/* check for duplicates, unless they are allowed */
 		//warn("Insert %p into %p", item, tree);
 		if (!tree->allow_duplicates) {
 			hint= rbtree_find_nearest(
 				&tree->root_sentinel,
-				item, // The item *is* the key that gets passed to the compare function
+				&stack_item, // The item *is* the key that gets passed to the compare function
 				(int(*)(void*,void*,void*)) tree->compare,
 				tree, -OFS_TreeRBXS_item_FIELD_rbnode,
 				&cmp);
@@ -468,14 +520,16 @@ insert(tree, key, val)
 		if (hint && cmp == 0) {
 			RETVAL= -1;
 		} else {
+			item= TreeRBXS_new_item_from_tmp_item(&stack_item);
 			if (!rbtree_node_insert(
 				hint? hint : &tree->root_sentinel,
 				&item->rbnode,
 				(int(*)(void*,void*,void*)) tree->compare,
 				tree, -OFS_TreeRBXS_item_FIELD_rbnode
-			)) croak("BUG: insert failed");
-			/* success.  The item is no longer a temporary. */
-			tree->tmp_item= NULL;
+			)) {
+				TreeRBXS_item_free(item);
+				croak("BUG: insert failed");
+			}
 			RETVAL= rbtree_node_index(&item->rbnode);
 		}
 		//TreeRBXS_assert_structure(tree);
@@ -488,24 +542,23 @@ put(tree, key, val)
 	SV *key
 	SV *val
 	INIT:
-		struct TreeRBXS_item *item;
+		struct TreeRBXS_item stack_item, *item;
 		rbtree_node_t *first= NULL, *last= NULL;
-		int cmp;
 		size_t count;
 	PPCODE:
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
-		TreeRBXS_init_tmp_item(tree, key, val);
+		TreeRBXS_init_tmp_item(&stack_item, tree, key, val);
 		ST(0)= &PL_sv_undef;
 		if (rbtree_find_all(
 			&tree->root_sentinel,
-			tree->tmp_item, // The item *is* the key that gets passed to the compare function
+			&stack_item, // The item *is* the key that gets passed to the compare function
 			(int(*)(void*,void*,void*)) tree->compare,
 			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
 			&first, &last, &count)
 		) {
 			//warn("replacing %d matching keys with new value", (int)count);
-			/* prune every node that follows 'first' */
+			// prune every node that follows 'first'
 			while (last != first) {
 				item= GET_TreeRBXS_item_FROM_rbnode(last);
 				last= rbtree_node_prev(last);
@@ -513,23 +566,22 @@ put(tree, key, val)
 				TreeRBXS_item_detach_tree(item, tree);
 			}
 			/* overwrite the value of the node */
-			item= GET_TreeRBXS_item_FROM_rbnode(last);
-			/* already made a copy of the value above, into the tree's tmp_value.
-			   In case that was expensive, use that new SV and throw away the SV of the current node */
-			if (item->value) ST(0)= sv_2mortal(item->value);
-			item->value= tree->tmp_item->value;
-			tree->tmp_item->value= NULL;
+			item= GET_TreeRBXS_item_FROM_rbnode(first);
+			val= newSVsv(val);
+			ST(0)= sv_2mortal(item->value); // return the old value
+			item->value= val; // sore new copy of supplied param
 		}
 		else {
-			item= tree->tmp_item;
+			item= TreeRBXS_new_item_from_tmp_item(&stack_item);
 			if (!rbtree_node_insert(
 				first? first : last? last : &tree->root_sentinel,
 				&item->rbnode,
 				(int(*)(void*,void*,void*)) tree->compare,
 				tree, -OFS_TreeRBXS_item_FIELD_rbnode
-			)) croak("BUG: insert failed");
-			/* success.  The item is no longer a temporary. */
-			tree->tmp_item= NULL;
+			)) {
+				TreeRBXS_item_free(item);
+				croak("BUG: insert failed");
+			}
 		}
 		XSRETURN(1);
 
@@ -544,14 +596,7 @@ get(tree, key)
 	PPCODE:
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
-		memset(&stack_item, 0, sizeof(stack_item));
-		switch (tree->key_type) {
-		case KEY_TYPE_STR:
-		case KEY_TYPE_ANY:   stack_item.keyunion.skey= key;       break;
-		case KEY_TYPE_INT:   stack_item.keyunion.ikey= SvIV(key); break;
-		case KEY_TYPE_FLOAT: stack_item.keyunion.nkey= SvNV(key); break;
-		default:             croak("BUG: unhandled key_type");
-		}
+		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
 		ST(0)= &PL_sv_undef;
 		node= rbtree_find_nearest(
 			&tree->root_sentinel,
@@ -576,14 +621,7 @@ get_node(tree, key)
 	CODE:
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
-		memset(&stack_item, 0, sizeof(stack_item));
-		switch (tree->key_type) {
-		case KEY_TYPE_STR:
-		case KEY_TYPE_ANY:   stack_item.keyunion.skey= key;       break;
-		case KEY_TYPE_INT:   stack_item.keyunion.ikey= SvIV(key); break;
-		case KEY_TYPE_FLOAT: stack_item.keyunion.nkey= SvNV(key); break;
-		default:             croak("BUG: unhandled key_type");
-		}
+		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
 		node= rbtree_find_nearest(
 			&tree->root_sentinel,
 			&stack_item, // The item *is* the key that gets passed to the compare function
@@ -600,20 +638,12 @@ delete(tree, key)
 	SV *key
 	INIT:
 		struct TreeRBXS_item stack_item, *item;
-		rbtree_node_t *node, *next;
+		rbtree_node_t *node;
 		size_t count, i;
 	CODE:
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
-		memset(&stack_item, 0, sizeof(stack_item));
-		stack_item.key_type= tree->key_type;
-		switch (tree->key_type) {
-		case KEY_TYPE_STR:
-		case KEY_TYPE_ANY:   stack_item.keyunion.skey= key;       break;
-		case KEY_TYPE_INT:   stack_item.keyunion.ikey= SvIV(key); break;
-		case KEY_TYPE_FLOAT: stack_item.keyunion.nkey= SvNV(key); break;
-		default:             croak("BUG: unhandled key_type");
-		}
+		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
 		if (rbtree_find_all(
 			&tree->root_sentinel,
 			&stack_item,
@@ -679,9 +709,11 @@ key(item)
 	CODE:
 		switch (item->key_type) {
 		case KEY_TYPE_ANY:
-		case KEY_TYPE_STR: RETVAL= newSVsv(item->keyunion.skey); break;
-		case KEY_TYPE_INT: RETVAL= newSViv(item->keyunion.ikey); break;
+		case KEY_TYPE_CLAIM: RETVAL= SvREFCNT_inc(item->keyunion.svkey); break;
+		case KEY_TYPE_INT:   RETVAL= newSViv(item->keyunion.ikey); break;
 		case KEY_TYPE_FLOAT: RETVAL= newSVnv(item->keyunion.nkey); break;
+		case KEY_TYPE_USTR:  RETVAL= newSVpvn_flags(item->keyunion.ckey, item->ckeylen, SVf_UTF8); break;
+		case KEY_TYPE_BSTR:  RETVAL= newSVpvn(item->keyunion.ckey, item->ckeylen); break;
 		default: croak("BUG: un-handled key_type");
 		}
 	OUTPUT:
@@ -782,6 +814,8 @@ BOOT:
 	newCONSTSUB(stash, "KEY_TYPE_ANY",   newSViv(KEY_TYPE_ANY));
 	newCONSTSUB(stash, "KEY_TYPE_INT",   newSViv(KEY_TYPE_INT));
 	newCONSTSUB(stash, "KEY_TYPE_FLOAT", newSViv(KEY_TYPE_FLOAT));
-	newCONSTSUB(stash, "KEY_TYPE_STR",   newSViv(KEY_TYPE_STR));
+	newCONSTSUB(stash, "KEY_TYPE_USTR",  newSViv(KEY_TYPE_USTR));
+	newCONSTSUB(stash, "KEY_TYPE_BSTR",  newSViv(KEY_TYPE_BSTR));
+	newCONSTSUB(stash, "KEY_TYPE_CLAIM", newSViv(KEY_TYPE_CLAIM));
 
 PROTOTYPES: DISABLE

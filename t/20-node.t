@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 use Test2::V0;
-use Tree::RB::XS qw( KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_STR KEY_TYPE_ANY );
+use Tree::RB::XS qw( KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_USTR KEY_TYPE_BSTR KEY_TYPE_ANY );
 use Time::HiRes 'time';
 
 my $tree= Tree::RB::XS->new(key_type => KEY_TYPE_INT);
@@ -27,23 +27,22 @@ is( $node->next, undef, 'end' );
 
 is( $tree->nth_node(5)->value, 6, 'nth(5)' );
 
-$tree= Tree::RB::XS->new(key_type => KEY_TYPE_ANY);
-$tree->put(a => 1);
-is( $tree->min_node->key, 'a', 'key from type ANY' );
+# Ensure the 'key' accessor can read all types of keys
+for (KEY_TYPE_ANY, KEY_TYPE_INT, KEY_TYPE_FLOAT, KEY_TYPE_USTR, KEY_TYPE_BSTR) {
+	$tree= Tree::RB::XS->new(key_type => $_);
+	$tree->put(42 => 1);
+	is( $tree->min_node->key, 42, "key from type $_" );
+}
 
-$tree= Tree::RB::XS->new(key_type => KEY_TYPE_FLOAT);
-$tree->put(.5 => 1);
-is( $tree->min_node->key, 0.5, 'key from type FLOAT' );
-
-$tree->put(.75 => 2);
+$tree->put(x => 2);
 is( $tree->size, 2, '2 nodes before prune' );
-ok( my $half= $tree->get_node(.5) );
-is( $half->next, $tree->max_node, 'has next' );
-is( $half->prune, 1, 'remove .5' );
-is( $half->next, undef, 'no longer has next' );
-is( $half->prune, 0, 'already removed' );
+ok( my $x= $tree->get_node('x') );
+is( $x->prev, $tree->max_node, 'has next' );
+is( $x->prune, 1, 'remove "x"' );
+is( $x->prev, undef, 'no longer has next' );
+is( $x->prune, 0, 'already removed' );
 is( $tree->size, 1, '1 node after prune' );
-is( $tree->min->key, .75 );
+is( $tree->min->key, 42 );
 is( $tree->min->prune, 1, 'remove last node' );
 is( $tree->size, 0, 'tree empty' );
 
