@@ -10,11 +10,13 @@ require XSLoader;
 XSLoader::load('Tree::RB::XS', $Tree::RB::XS::VERSION);
 use Exporter 'import';
 our @_key_types= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_BSTR KEY_TYPE_USTR );
+our @_cmp_enum= qw( CMP_PERL CMP_INT CMP_FLOAT CMP_MEMCMP CMP_UTF8 );
 our @_lookup_modes= qw( LU_EQ LU_GT LU_LT LU_GE LU_LE LU_NEXT LU_PREV
                         LUEQUAL LUGTEQ LULTEQ LUGREAT LULESS LUNEXT LUPREV );
-our @EXPORT_OK= (@_key_types, @_lookup_modes);
+our @EXPORT_OK= (@_key_types, @_cmp_enum, @_lookup_modes);
 our %EXPORT_TAGS= (
 	key_type => \@_key_types,
+	cmp      => \@_cmp_enum,
 	lookup   => \@_lookup_modes,
 );
 
@@ -59,36 +61,23 @@ Options:
 
 =over
 
-=item key_type
+=item L</key_type>
 
-This chooses how keys will be stored in this tree: L</KEY_TYPE_ANY> (the default),
-L</KEY_TYPE_INT>, L</KEY_TYPE_FLOAT>, L</KEY_TYPE_BSTR>, or L</KEY_TYPE_USTR>.
-See the description in EXPORTS for full details on each.
+Choose an optimized storage for keys.  The default is L</KEY_TYPE_ANY>.
 
-Integers are of course the most efficient, followed by floats, followed by
-byte-strings and unicode-strings, followed by 'ANY' (which stores a whole
-perl scalar).  BSTR and USTR both save an internal copy of your key, so
-might be a bad idea if your keys are extremely large and nodes are frequently
-added to the tree.
+=item L</compare_fn>
 
-If the C<compare_fn> is a Perl coderef, C<key_type> is forced to L</KEY_TYPE_ANY>.
-(it is best for performance to store a whole perl scalar if they are going
-to be passed to your comparison function over and over and over).
+Choose a custom key-compare function.  The default depends on C<key_type>.
+If this is a perl coderef, the C<key_type> is forced to be L</KEY_TYPE_ANY>.
 
-=item compare_fn
+=item L</allow_duplicates>
 
-A coderef that compares its parameters in the same manner as C<cmp>.
+Whether to allow two nodes with the same key.  Defaults to false.
 
-If specified as a perl coderef, this forces C<< key_type => KEY_TYPE_ANY >>.
-Beware that using a custom coderef throws away most of the speed gains from using
-this XS variant over plain L<Tree::RB>.
+=item L</compat_list_context>
 
-If not provided, the default comparison is chosen to match the C<key_type>,
-with the defult C<KEY_TYPE_ANY> using Perl's own C<cmp> comparator.
-
-TODO: It would be neat to have a collection of enumerated XS comparison
-functions available to choose from, to get custom behavior without the
-performance hit of a coderef callback.
+Whether to enable full compatibility with L<Tree::RB>'s list-context behaviors.
+Defaults to false.
 
 =back
 
@@ -97,40 +86,49 @@ performance hit of a coderef callback.
 sub new {
 	my $class= shift;
 	my %options= @_ == 1 && ref $_[0] eq 'CODE'? ( compare_fn => $_[0] ) : @_;
-	$options{key_type}= $class->_coerce_key_type($options{key_type})
-		if defined $options{key_type};
 	my $self= bless \%options, $class;
-	$self->_init_tree($self->key_type, $self->compare_fn);
+	$self->_init_tree(delete $self->{key_type}, delete $self->{compare_fn});
 	$self->allow_duplicates(1) if delete $self->{allow_duplicates};
+	$self->compat_list_context(1) if delete $self->{compat_list_context};
 	$self;
-}
-
-sub _coerce_key_type {
-	my ($class, $kt)= @_;
-	no warnings 'numeric';
-	return $kt if 0+$kt;
-	$kt =~ /^KEY_TYPE_/ && (my $m= $class->can($kt))
-		or croak "Invalid key type $kt";
-	return &$m;
 }
 
 =head1 ATTRIBUTES
 
 =head2 key_type
 
-The storage mechanism used by the tree.  Read-only.
-This returns one of the constants L<KEY_TYPE_ANY|below>
-(which stringify to the names).
+The key-storage strategy used by the tree.  Read-only; pass as an option to
+the constructor.
+
+This is one of the following values: L</KEY_TYPE_ANY>, L</KEY_TYPE_INT>,
+L</KEY_TYPE_FLOAT>, L</KEY_TYPE_BSTR>, or L</KEY_TYPE_USTR>.
+See the description in EXPORTS for full details on each.
+
+Integers are of course the most efficient, followed by floats, followed by
+byte-strings and unicode-strings, followed by 'ANY' (which stores a whole
+perl scalar).  BSTR and USTR both save an internal copy of your key, so
+might be a bad idea if your keys are extremely large and nodes are frequently
+added to the tree.
 
 =head2 compare_fn
 
-The optional coderef that will be called each time keys need compared.
-Read-only.
+Specifies the function that compares keys.  Read-only; pass as an option to
+the constructor.
 
-=cut
+This is one of: L</CMP_PERL>, L</CMP_INT>, L</CMP_FLOAT>, L</CMP_MEMCMP>,
+L</CMP_UTF8>, or a coderef.
 
-sub key_type { $_[0]{key_type} || KEY_TYPE_ANY() }
-sub compare_fn { $_[0]{compare_fn} }
+If given as a perl coderef, it should take two parameters and return an integer
+indicating their order in the same manner as Perl's C<cmp>.
+Note that this forces C<< key_type => KEY_TYPE_ANY >>.
+Beware that using a custom coderef throws away most of the speed gains from using
+this XS variant over plain L<Tree::RB>.
+
+If not provided, the default comparison is chosen to match the C<key_type>,
+with the defult C<KEY_TYPE_ANY> using Perl's own C<cmp> comparator.
+
+Patches welcome, for anyone who wants to expand the list of optimized built-in
+comparison functions.
 
 =head2 allow_duplicates
 
@@ -138,6 +136,14 @@ Boolean, read/write.  Controls whether L</insert> will allow additional nodes wi
 keys that already exist in the tree.  This does not change the behavior of L</put>,
 only L</insert>.  If you set this to false, it does not remove duplicates that
 already existed.  The initial value is false.
+
+=head2 compat_list_context
+
+Boolean, read/write.  Controls whether C</get> returns multiple values in list context.
+I wanted to match the API of L<Tree::RB>, but I can't bring myself to make an innocent-named
+method like 'get' change its behavior in list context.  So, by deault, this attribute is
+false and 'get' always returns a scalar.  But if you set this to true, C<get> changes in
+list context to also return the Node, like is done in C<Tree::RB>.
 
 =head2 size
 

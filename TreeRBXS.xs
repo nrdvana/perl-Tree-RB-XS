@@ -3,6 +3,12 @@
 #include "XSUB.h"
 #include "ppport.h"
 
+/* The core Red/Black algorithm which operates on rbtree_node_t */
+#include "rbtree.h"
+
+struct TreeRBXS;
+struct TreeRBXS_item;
+
 #define AUTOCREATE 1
 #define OR_DIE 2
 
@@ -13,6 +19,99 @@
 #define KEY_TYPE_BSTR  5
 #define KEY_TYPE_USTR  6
 #define KEY_TYPE_MAX   6
+
+static int parse_key_type(SV *type_sv) {
+	const char *str;
+	size_t len;
+	int key_type= -1;
+	if (SvIOK(type_sv)) {
+		key_type= SvIV(type_sv);
+		if (key_type < 1 || key_type > KEY_TYPE_MAX)
+			key_type= -1;
+	}
+	else if (SvPOK(type_sv)) {
+		str= SvPV(type_sv, len);
+		if (len > 9 && foldEQ(str, "KEY_TYPE_", 9)) {
+			str += 9;
+			len -= 9;
+		}
+		key_type= (len == 3 && foldEQ(str, "ANY",   3))? KEY_TYPE_ANY
+		        : (len == 5 && foldEQ(str, "CLAIM", 5))? KEY_TYPE_CLAIM
+		        : (len == 3 && foldEQ(str, "INT",   3))? KEY_TYPE_INT
+		        : (len == 5 && foldEQ(str, "FLOAT", 5))? KEY_TYPE_FLOAT
+		        : (len == 4 && foldEQ(str, "BSTR",  4))? KEY_TYPE_BSTR
+		        : (len == 4 && foldEQ(str, "USTR",  4))? KEY_TYPE_USTR
+		        : -1;
+	}
+	return key_type;
+}
+
+static const char *get_key_type_name(int key_type) {
+	switch (key_type) {
+	case KEY_TYPE_ANY:   return "KEY_TYPE_ANY";
+	case KEY_TYPE_CLAIM: return "KEY_TYPE_CLAIM";
+	case KEY_TYPE_INT:   return "KEY_TYPE_INT";
+	case KEY_TYPE_FLOAT: return "KEY_TYPE_FLOAT";
+	case KEY_TYPE_BSTR:  return "KEY_TYPE_BSTR";
+	case KEY_TYPE_USTR:  return "KEY_TYPE_USTR";
+	default: return NULL;
+	}
+}
+
+typedef int TreeRBXS_cmp_fn(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b);
+static TreeRBXS_cmp_fn TreeRBXS_cmp_int;
+static TreeRBXS_cmp_fn TreeRBXS_cmp_float;
+static TreeRBXS_cmp_fn TreeRBXS_cmp_memcmp;
+static TreeRBXS_cmp_fn TreeRBXS_cmp_utf8;
+static TreeRBXS_cmp_fn TreeRBXS_cmp_perl;
+static TreeRBXS_cmp_fn TreeRBXS_cmp_perl_cb;
+
+#define CMP_PERL    1
+#define CMP_INT     2
+#define CMP_FLOAT   3
+#define CMP_MEMCMP  4
+#define CMP_UTF8    5
+#define CMP_SUB     6
+#define CMP_MAX     6
+
+static int parse_cmp_fn(SV *cmp_sv) {
+	const char *str;
+	size_t len;
+	int cmp_id= -1;
+	if (SvROK(cmp_sv) && SvTYPE(SvRV(cmp_sv)) == SVt_PVCV)
+		cmp_id= CMP_SUB;
+	else if (SvIOK(cmp_sv)) {
+		cmp_id= SvIV(cmp_sv);
+		if (cmp_id < 1 || cmp_id > CMP_MAX || cmp_id == CMP_SUB)
+			cmp_id= -1;
+	}
+	else if (SvPOK(cmp_sv)) {
+		str= SvPV(cmp_sv, len);
+		if (len > 4 && foldEQ(str, "CMP_", 4)) {
+			str += 4;
+			len -= 4;
+		}
+		cmp_id= (len == 4 && foldEQ(str, "PERL",   4))? CMP_PERL
+		      : (len == 3 && foldEQ(str, "INT",    3))? CMP_INT
+		      : (len == 5 && foldEQ(str, "FLOAT",  5))? CMP_FLOAT
+		      : (len == 6 && foldEQ(str, "MEMCMP", 6))? CMP_MEMCMP
+		      : (len == 4 && foldEQ(str, "UTF8",   4))? CMP_UTF8
+		    //: (len == 7 && foldEQ(str, "SUB",    3))? CMP_SUB   can only be requested by a CV*
+		      : -1;
+	}
+	return cmp_id;
+}
+
+static const char * get_cmp_name(int cmp_id) {
+	switch (cmp_id) {
+	case CMP_PERL:   return "CMP_PERL";
+	case CMP_INT:    return "CMP_INT";
+	case CMP_FLOAT:  return "CMP_FLOAT";
+	case CMP_MEMCMP: return "CMP_MEMCMP";
+	case CMP_UTF8:   return "CMP_UTF8";
+	default: return NULL;
+	}
+}
 
 #define LU_EQ   0
 #define LU_GE   1
@@ -74,21 +173,15 @@ static SV * new_enum_dualvar(IV ival, SV *name) {
 	return name;
 }
 
-/* The core Red/Black algorithm which operates on rbtree_node_t */
-#include "rbtree.h"
-
-struct TreeRBXS;
-struct TreeRBXS_item;
-
-typedef int TreeRBXS_cmp_fn(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b);
-
 // Struct attached to each instance of Tree::RB::XS
 struct TreeRBXS {
 	SV *owner;                     // points to Tree::RB::XS internal HV (not ref)
-	int key_type;                  // must always be set and never changed
-	bool allow_duplicates;         // flag to affect behavior of insert.  may be changed.
 	TreeRBXS_cmp_fn *compare;      // internal compare function.  Always set and never changed.
 	SV *compare_callback;          // user-supplied compare.  May be NULL, but can never be changed.
+	int key_type;                  // must always be set and never changed
+	int compare_fn_id;             // indicates which compare is in use, for debugging
+	bool allow_duplicates;         // flag to affect behavior of insert.  may be changed.
+	bool compat_list_context;      // flag to enable full compat with Tree::RB's list context behavior
 	rbtree_node_t root_sentinel;   // parent-of-root, used by rbtree implementation.
 	rbtree_node_t leaf_sentinel;   // dummy node used by rbtree implementation.
 };
@@ -265,6 +358,13 @@ static int TreeRBXS_cmp_memcmp(struct TreeRBXS *tree, struct TreeRBXS_item *a, s
 	size_t alen= a->ckeylen, blen= b->ckeylen;
 	int cmp= memcmp(a->keyunion.ckey, b->keyunion.ckey, alen < blen? alen : blen);
 	return cmp? cmp : alen < blen? -1 : alen > blen? 1 : 0;
+}
+
+static int TreeRBXS_cmp_utf8(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
+	return bytes_cmp_utf8(
+		(unsigned char*)a->keyunion.ckey, a->ckeylen,
+		(unsigned char*)b->keyunion.ckey, b->ckeylen
+	);
 }
 
 // Compare SV items using Perl's 'cmp' operator
@@ -468,7 +568,7 @@ static void TreeRBXS_set_magic_item(SV *obj, struct TreeRBXS_item *item) {
 // Returned SV is a reference with active refcount, which is what the typemap
 // wants for returning a "struct TreeRBXS_item*" to prel-land
 static SV* TreeRBXS_wrap_item(struct TreeRBXS_item *item) {
-	SV *obj, *sv;
+	SV *obj;
 	// Since this is used in typemap, handle NULL gracefully
 	if (!item)
 		return &PL_sv_undef;
@@ -489,40 +589,75 @@ static SV* TreeRBXS_wrap_item(struct TreeRBXS_item *item) {
 MODULE = Tree::RB::XS              PACKAGE = Tree::RB::XS
 
 void
-_init_tree(obj, key_type, compare_fn= NULL)
+_init_tree(obj, key_type_sv, compare_fn)
 	SV *obj
-	int key_type
-	SV *compare_fn
+	SV *key_type_sv;
+	SV *compare_fn;
 	INIT:
 		struct TreeRBXS *tree;
+		int key_type;
+		int cmp_id= 0;
 	PPCODE:
-		if (!sv_isobject(obj))
+		// Must be called on a blessed hashref
+		if (!sv_isobject(obj) || SvTYPE(SvRV(obj)) != SVt_PVHV)
 			croak("_init_tree called on non-object");
-		if (key_type <= 0 || key_type > KEY_TYPE_MAX)
-			croak("invalid key_type %d", key_type);
+		
+		// parse key type and compare_fn
+		key_type= SvOK(key_type_sv)? parse_key_type(key_type_sv) : KEY_TYPE_ANY;
+		if (key_type < 0)
+			croak("invalid key_type %s", SvPV_nolen(key_type_sv));
+		
+		if (SvOK(compare_fn)) {
+			cmp_id= parse_cmp_fn(compare_fn);
+			if (cmp_id < 0)
+				croak("invalid compare_fn %s", SvPV_nolen(compare_fn));
+		} else {
+			cmp_id= key_type == KEY_TYPE_INT?   CMP_INT
+			      : key_type == KEY_TYPE_FLOAT? CMP_FLOAT
+			      : key_type == KEY_TYPE_BSTR?  CMP_MEMCMP
+			      : key_type == KEY_TYPE_USTR?  CMP_UTF8
+			      : key_type == KEY_TYPE_ANY?   CMP_PERL /* use Perl's cmp operator */
+			      : key_type == KEY_TYPE_CLAIM? CMP_PERL
+			      : 0;
+			if (!cmp_id)
+				croak("BUG: unhandled key_type");
+		}
+		
 		tree= TreeRBXS_get_magic_tree(obj, AUTOCREATE|OR_DIE);
 		if (tree->owner)
 			croak("Tree is already initialized");
+		
 		tree->owner= SvRV(obj);
-		// If there is a user-supplied compare function, it mandates the use of
-		// KEY_TYPE_ANY no matter what the user asked for.
-		if (SvOK(compare_fn)) {
+		tree->compare_fn_id= cmp_id;
+		switch (cmp_id) {
+		case CMP_SUB:
 			tree->compare_callback= compare_fn;
 			SvREFCNT_inc(tree->compare_callback);
 			tree->key_type= key_type == KEY_TYPE_CLAIM? key_type : KEY_TYPE_ANY;
 			tree->compare= TreeRBXS_cmp_perl_cb;
-		}
-		else {
-			tree->key_type= key_type;
-			tree->compare=
-				  key_type == KEY_TYPE_INT? TreeRBXS_cmp_int
-				: key_type == KEY_TYPE_FLOAT? TreeRBXS_cmp_float
-				: key_type == KEY_TYPE_USTR? TreeRBXS_cmp_memcmp
-				: key_type == KEY_TYPE_BSTR? TreeRBXS_cmp_memcmp
-				: key_type == KEY_TYPE_ANY? TreeRBXS_cmp_perl /* use Perl's cmp operator */
-				: key_type == KEY_TYPE_CLAIM? TreeRBXS_cmp_perl
-				: NULL;
-			if (!tree->compare) croak("Un-handled key comparison configuration");
+			break;
+		case CMP_PERL:
+			tree->key_type= key_type == KEY_TYPE_CLAIM? key_type : KEY_TYPE_ANY;
+			tree->compare= TreeRBXS_cmp_perl;
+			break;
+		case CMP_INT:
+			tree->key_type= KEY_TYPE_INT;
+			tree->compare= TreeRBXS_cmp_int;
+			break;
+		case CMP_FLOAT:
+			tree->key_type= KEY_TYPE_FLOAT;
+			tree->compare= TreeRBXS_cmp_float;
+			break;
+		case CMP_MEMCMP:
+			tree->key_type= KEY_TYPE_BSTR;
+			tree->compare= TreeRBXS_cmp_memcmp;
+			break;
+		case CMP_UTF8:
+			tree->key_type= KEY_TYPE_USTR;
+			tree->compare= TreeRBXS_cmp_utf8;
+			break;
+		default:
+			croak("BUG: unhandled cmp_id");
 		}
 		XSRETURN(1);
 
@@ -531,6 +666,25 @@ _assert_structure(tree)
 	struct TreeRBXS *tree
 	CODE:
 		TreeRBXS_assert_structure(tree);
+
+void
+key_type(tree)
+	struct TreeRBXS *tree
+	INIT:
+		int kt= tree->key_type;
+	PPCODE:
+		ST(0)= sv_2mortal(new_enum_dualvar(kt, newSVpv(get_key_type_name(kt), 0)));
+		XSRETURN(1);
+
+void
+compare_fn(tree)
+	struct TreeRBXS *tree
+	INIT:
+		int id= tree->compare_fn_id;
+	PPCODE:
+		ST(0)= id == CMP_SUB? tree->compare_callback
+			: sv_2mortal(new_enum_dualvar(id, newSVpv(get_cmp_name(id), 0)));
+		XSRETURN(1);
 
 void
 allow_duplicates(tree, allow= NULL)
@@ -542,6 +696,19 @@ allow_duplicates(tree, allow= NULL)
 			// ST(0) is $self, so let it be the return value
 		} else {
 			ST(0)= sv_2mortal(newSViv(tree->allow_duplicates? 1 : 0));
+		}
+		XSRETURN(1);
+
+void
+compat_list_context(tree, allow= NULL)
+	struct TreeRBXS *tree
+	SV* allow
+	PPCODE:
+		if (items > 1) {
+			tree->compat_list_context= SvTRUE(allow);
+			// ST(0) is $self, so let it be the return value
+		} else {
+			ST(0)= sv_2mortal(newSViv(tree->compat_list_context? 1 : 0));
 		}
 		XSRETURN(1);
 
@@ -646,77 +813,45 @@ put(tree, key, val)
 		XSRETURN(1);
 
 void
-get(tree, key)
-	struct TreeRBXS *tree
-	SV *key
-	INIT:
-		struct TreeRBXS_item stack_item, *item;
-		rbtree_node_t *node;
-		int cmp;
-	PPCODE:
-		if (!SvOK(key))
-			croak("Can't use undef as a key");
-		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
-		ST(0)= &PL_sv_undef;
-		node= rbtree_find_nearest(
-			&tree->root_sentinel,
-			&stack_item, // The item *is* the key that gets passed to the compare function
-			(int(*)(void*,void*,void*)) tree->compare,
-			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
-			&cmp);
-		if (node && cmp == 0) {
-			item= GET_TreeRBXS_item_FROM_rbnode(node);
-			ST(0)= item->value;
-		}
-		XSRETURN(1);
-
-void
-get_all(tree, key)
-	struct TreeRBXS *tree
-	SV *key
-	INIT:
-		struct TreeRBXS_item stack_item, *item;
-		rbtree_node_t *first;
-		size_t count, i;
-	PPCODE:
-		if (!SvOK(key))
-			croak("Can't use undef as a key");
-		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
-		if (rbtree_find_all(
-			&tree->root_sentinel,
-			&stack_item,
-			(int(*)(void*,void*,void*)) tree->compare,
-			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
-			&first, NULL, &count)
-		) {
-			EXTEND(SP, count);
-			for (i= 0; i < count; i++) {
-				item= GET_TreeRBXS_item_FROM_rbnode(first);
-				ST(i)= item->value;
-				first= rbtree_node_next(first);
-			}
-		} else
-			count= 0;
-		XSRETURN(count);
-
-void
-lookup(tree, key, mode_sv)
+get(tree, key, mode_sv= NULL)
 	struct TreeRBXS *tree
 	SV *key
 	SV *mode_sv
+	ALIAS:
+		Tree::RB::XS::lookup = 0
+		Tree::RB::XS::lookup_node = 1
+		Tree::RB::XS::get = 2
+		Tree::RB::XS::get_node = 3
 	INIT:
 		struct TreeRBXS_item stack_item, *item;
 		rbtree_node_t *first, *last, *node= NULL;
-		int cmp, mode, len;
-		const char *mode_str;
+		int cmp, mode;
 	PPCODE:
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
-		if ((mode= parse_lookup_mode(mode_sv)) < 0)
+		mode= mode_sv? parse_lookup_mode(mode_sv) : LU_EQ;
+		if (mode < 0)
 			croak("Invalid lookup mode %s", SvPV_nolen(mode_sv));
-
+		// create a fake item to act as a search key
 		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
-		ST(0)= &PL_sv_undef;
+		// In "full compatibility mode", 'get' is identical to 'lookup'
+		if (ix > 1 && tree->compat_list_context)
+			ix -= 2;
+		// If this is a simple 'get = key' returning a value, call the simpler rbtree_find_nearest
+		if ((ix == 2 || GIMME_V == G_SCALAR) && mode == LU_EQ) {
+			node= rbtree_find_nearest(
+				&tree->root_sentinel,
+				&stack_item, // The item *is* the key that gets passed to the compare function
+				(int(*)(void*,void*,void*)) tree->compare,
+				tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+				&cmp);
+			ST(0)= (ix == 1 || ix == 3)? sv_2mortal(TreeRBXS_wrap_item(GET_TreeRBXS_item_FROM_rbnode(node)))
+			     : (node && cmp == 0)? GET_TreeRBXS_item_FROM_rbnode(node)->value
+			     : &PL_sv_undef;
+			XSRETURN(1);
+		}
+		// Else need to ensure we find the *first* matching node for a key,
+		// to deal with the case of duplicate keys.
 		if (rbtree_find_all(
 			&tree->root_sentinel,
 			&stack_item,
@@ -750,37 +885,56 @@ lookup(tree, key, mode_sv)
 		}
 		if (node) {
 			item= GET_TreeRBXS_item_FROM_rbnode(node);
-			ST(0)= item->value;
-			if (GIMME_V == G_ARRAY)
+			if (ix == 1 || ix == 3) { /* lookup_node or get_node */
+				ST(0)= sv_2mortal(TreeRBXS_wrap_item(item));
+				XSRETURN(1);
+			}
+			else if (ix == 0 /* lookup */ && (GIMME_V == G_ARRAY)) {
+				ST(0)= item->value;
 				ST(1)= sv_2mortal(TreeRBXS_wrap_item(item));
+				XSRETURN(2);
+			} else { // get, or lookup in scalar context
+				ST(0)= item->value;
+				XSRETURN(1);
+			}
 		} else {
-			ST(0)= &PL_sv_undef;
-			if (GIMME_V == G_ARRAY)
-				ST(1)= &PL_sv_undef;
+			if (ix == 0 /* lookup */ && (GIMME_V == G_ARRAY)) {
+				XSRETURN(0);
+			}
+			else {
+				ST(0)= &PL_sv_undef;
+				XSRETURN(1);
+			}
 		}
-		XSRETURN(GIMME_V == G_ARRAY? 2 : 1);
 
-struct TreeRBXS_item *
-get_node(tree, key)
+void
+get_all(tree, key)
 	struct TreeRBXS *tree
 	SV *key
 	INIT:
-		struct TreeRBXS_item stack_item;
-		rbtree_node_t *node;
-		int cmp;
-	CODE:
+		struct TreeRBXS_item stack_item, *item;
+		rbtree_node_t *first;
+		size_t count, i;
+	PPCODE:
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
 		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
-		node= rbtree_find_nearest(
+		if (rbtree_find_all(
 			&tree->root_sentinel,
-			&stack_item, // The item *is* the key that gets passed to the compare function
+			&stack_item,
 			(int(*)(void*,void*,void*)) tree->compare,
 			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
-			&cmp);
-		RETVAL= (node && cmp == 0)? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
-	OUTPUT:
-		RETVAL
+			&first, NULL, &count)
+		) {
+			EXTEND(SP, count);
+			for (i= 0; i < count; i++) {
+				item= GET_TreeRBXS_item_FROM_rbnode(first);
+				ST(i)= item->value;
+				first= rbtree_node_next(first);
+			}
+		} else
+			count= 0;
+		XSRETURN(count);
 
 IV
 delete(tree, key)
@@ -975,6 +1129,11 @@ BOOT:
 	EXPORT_ENUM(KEY_TYPE_USTR);
 	EXPORT_ENUM(KEY_TYPE_BSTR);
 	EXPORT_ENUM(KEY_TYPE_CLAIM);
+	EXPORT_ENUM(CMP_PERL);
+	EXPORT_ENUM(CMP_INT);
+	EXPORT_ENUM(CMP_FLOAT);
+	EXPORT_ENUM(CMP_UTF8);
+	EXPORT_ENUM(CMP_MEMCMP);
 	EXPORT_ENUM(LU_EQ);
 	EXPORT_ENUM(LU_GE);
 	EXPORT_ENUM(LU_LE);
