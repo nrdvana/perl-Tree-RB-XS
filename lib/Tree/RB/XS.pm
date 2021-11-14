@@ -154,23 +154,34 @@ Returns the number of elements in the tree.
 =head2 get
 
   my $val= $tree->get($key);
+                ->get($key, $mode);
 
-Fetch a value form the tree, by its key.  Unlike L<Tree::RB/get>, this always
-returns a single value, regardless of list context, and does not accept options
-for how to find nearby keys.
+Fetch a value from the tree, by its key.  Unlike L<Tree::RB/get>, this always
+returns a single value, regardless of list context.
+
+Mode can be used to indicate something other than an exact match:
+L</GET_EQ>, L</GET_LE>, L</GET_LT>, L</GET_GE>, L</GET_GT>.
+
+=head2 get_node
+
+Same as L</get>, but returns the node instead of the value.  In trees with
+duplicate keys, this always returns the first node.  (nodes with identical keys
+are preserved in the order they were added)
 
 =head2 get_all
 
   my @values= $tree->get_all($key);
 
-If you L</allow_duplicates>, this method is useful to return the values of all
+In trees with duplicate keys, this method is useful to return the values of all
 nodes that match the key.  This can be more efficient than stepping node-to-node
 for small numbers of duplicates, but beware that large numbers of duplicate could
 have an adverse affect on Perl's stack.
 
-=head2 get_node
+=head2 lookup
 
-Same as L</get>, but returns the node instead of the value.
+Provided for compatibility with Tree::RB.  Same as L</get> in scalar context, but
+if called in list context it returns both the value and the node from L</get_node>.
+You can also use Tree::RB's lookup-mode constants of "LUEQUAL", etc.
 
 =head2 put
 
@@ -180,17 +191,28 @@ Associate the key with a new value.  If the key previously existed, this returns
 the old value, and updates the tree to reference the new value.  If the tree
 allows duplicate keys, this will replace all nodes having this key.
 
-=head2 delete
-
-  my $count= $tree->delete($key);
-
-Delete any node with a key identical to C<$key>, and return the number of nodes
-removed.  (This will only return 0 or 1, unless you enable duplicate keys.)
-
 =head2 insert
 
 Insert a new node into the tree, and return the index at which it was inserted.
-If the node already existed, this returns -1 and does not change the tree.
+If L</allow_duplicates> is not enabled, and the node already existed, this returns -1
+and does not change the tree.  If C<allow_duplicates> is enabled, this adds the new
+node after all nodes of the same key, preserving the insertion order.
+
+=head2 delete
+
+  my $count= $tree->delete($key);
+                  ->delete($key1, $key2);
+                  ->delete($node1, $node2);
+
+Delete any node with a key identical to C<$key>, and return the number of nodes
+removed.  If you supply two keys (or two nodes) this will delete those nodes and
+all nodes inbetween; $key1 is searched with mode GET_GE and key2 is searches with
+mode GET_LE, so the keys themselves do not need to be found in the tree.
+The keys (or nodes) most be given in ascending order, else no nodes are deleted.
+
+If you want to delete a range *exclusive* of one or both ends of the range, just
+use the C</get> method with the desired mode to look up each end of the nodes that
+you do want removed.
 
 =head2 min_node
 

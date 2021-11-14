@@ -937,34 +937,86 @@ get_all(tree, key)
 		XSRETURN(count);
 
 IV
-delete(tree, key)
+delete(tree, key1, key2= NULL)
 	struct TreeRBXS *tree
-	SV *key
+	SV *key1
+	SV *key2
 	INIT:
 		struct TreeRBXS_item stack_item, *item;
-		rbtree_node_t *node;
+		rbtree_node_t *first, *last, *node;
 		size_t count, i;
 	CODE:
-		if (!SvOK(key))
+		if (!SvOK(key1))
 			croak("Can't use undef as a key");
-		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
-		if (rbtree_find_all(
-			&tree->root_sentinel,
-			&stack_item,
-			(int(*)(void*,void*,void*)) tree->compare,
-			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
-			&node, NULL, &count)
-		) {
-			for (i= 0; i < count && node; i++) {
-				item= GET_TreeRBXS_item_FROM_rbnode(node);
-				node= rbtree_node_next(node);
-				TreeRBXS_item_detach_tree(item, tree);
-			}
-			RETVAL= i;
+		RETVAL= 0;
+		if ((item= TreeRBXS_get_magic_item(key1, 0))) {
+			first= &item->rbnode;
+			// verify it comes from this tree
+			for (node= first; rbtree_node_is_in_tree(node) && node->parent; node= node->parent);
+			if (node != &tree->root_sentinel)
+				croak("Node is not in tree");
 		}
 		else {
-			RETVAL= 0;
+			TreeRBXS_init_tmp_item(&stack_item, tree, key1, &PL_sv_undef);
+			if (rbtree_find_all(
+				&tree->root_sentinel,
+				&stack_item,
+				(int(*)(void*,void*,void*)) tree->compare,
+				tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+				&first, &last, &count)
+			) {
+				if (key2)
+					last= NULL;
+			}
+			else {
+				// Didn't find any matches.  But if range is given, then start deleting
+				// from the node following the key
+				if (key2) {
+					first= last;
+					last= NULL;
+				}
+			}
 		}
+		// If a range is given, and the first part of the range found a node,
+		// look for the end of the range.
+		if (key2 && first) {
+			if ((item= TreeRBXS_get_magic_item(key2, 0))) {
+				last= &item->rbnode;
+				// verify it comes from this tree
+				for (node= last; rbtree_node_is_in_tree(node) && node->parent; node= node->parent);
+				if (node != &tree->root_sentinel)
+					croak("Node is not in tree");
+			}
+			else {
+				TreeRBXS_init_tmp_item(&stack_item, tree, key2, &PL_sv_undef);
+				if (rbtree_find_all(
+					&tree->root_sentinel,
+					&stack_item,
+					(int(*)(void*,void*,void*)) tree->compare,
+					tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+					&node, &last, NULL)
+				) {
+					// first..last is ready to be deleted
+				} else {
+					// didn't match, so 'node' holds the final element before the key
+					last= node;
+				}
+			}
+			// Ensure that first comes before last
+			if (last && rbtree_node_index(first) > rbtree_node_index(last))
+				last= NULL;
+		}
+		// Delete the nodes if constructed a successful range
+		i= 0;
+		if (first && last) {
+			do {
+				item= GET_TreeRBXS_item_FROM_rbnode(first);
+				first= (first == last)? NULL : rbtree_node_next(first);
+				TreeRBXS_item_detach_tree(item, tree);
+				++i;
+			} while (first);
+		}
+		RETVAL= i;
 	OUTPUT:
 		RETVAL
 
