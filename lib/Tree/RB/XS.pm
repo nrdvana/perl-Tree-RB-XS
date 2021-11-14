@@ -11,7 +11,7 @@ XSLoader::load('Tree::RB::XS', $Tree::RB::XS::VERSION);
 use Exporter 'import';
 our @_key_types= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_BSTR KEY_TYPE_USTR );
 our @_cmp_enum= qw( CMP_PERL CMP_INT CMP_FLOAT CMP_MEMCMP CMP_UTF8 );
-our @_lookup_modes= qw( LU_EQ LU_GT LU_LT LU_GE LU_LE LU_NEXT LU_PREV
+our @_lookup_modes= qw( GET_EQ GET_GT GET_LT GET_GE GET_LE GET_NEXT GET_PREV
                         LUEQUAL LUGTEQ LULTEQ LUGREAT LULESS LUNEXT LUPREV );
 our @EXPORT_OK= (@_key_types, @_cmp_enum, @_lookup_modes);
 our %EXPORT_TAGS= (
@@ -22,18 +22,25 @@ our %EXPORT_TAGS= (
 
 =head1 SYNOPSIS
 
+B<NOTICE:> This module is very new and you should give it some thorough testing before
+trusting it with production data.
+
   my $tree= Tree::RB::XS->new;
-  $tree->put(a => 1);
+  $tree->put($_ => $_) for 'a'..'z';
   say $tree->get('a');
   $tree->delete('a');
+  say $tree->get('a', GET_GT); # finds 'b'
+  $tree->delete('a','z');
+  $tree->delete($tree->min, $tree->max);
   
   # optimize for integer comparisons
   $tree= Tree::RB::XS->new(key_type => KEY_TYPE_INT);
   $tree->put(1 => "x");
 
   # optimize for floating-point comparisons
-  $tree= Tree::RB::XS->new(key_type => KEY_TYPE_FLOAT);
-  $tree->put(0.125 => "x");
+  $tree= Tree::RB::XS->new(key_type => 'float', allow_duplicates => 1);
+  $tree->put(rand() => 1);
+  $tree->delete(0, $tree->get(.5, GET_LT));
 
   # optimize for byte strings
   $tree= Tree::RB::XS->new(key_type => KEY_TYPE_BSTR);
@@ -48,14 +55,22 @@ our %EXPORT_TAGS= (
 
 =head1 DESCRIPTION
 
-This module is similar to L<Tree::RB> but implemented in C for speed.
+This module is a wrapper for a Red/Black Tree implemented in C.  It's primary features over
+other search trees on CPAN are optimized comparisons of keys (speed), C<< O(log N) >>
+node-by-index lookup (which allows the tree to double as a sort of array), and the option to
+allow duplicate keys while preserving insertion order.
+
+The API is close but not identical to L<Tree::RB>, but can be configured to be fully compatible.
+In particular, the C<get> method in this module is not affected by array context unless you
+request C</compat_list_context>.  I also changed the documented names of a few methods, but
+include aliases for the Tree::RB name.
 
 =head1 CONSTRUCTOR
 
 =head2 new
 
   my $tree= Tree::RB::XS->new( %OPTIONS );
-                     ...->new( sub($a,$b) { $a cmp $b });
+                     ...->new( sub($x,$y) { $x cmp $y });
 
 Options:
 
@@ -63,12 +78,15 @@ Options:
 
 =item L</key_type>
 
-Choose an optimized storage for keys.  The default is L</KEY_TYPE_ANY>.
+Choose an optimized storage for keys.  The default is L</KEY_TYPE_ANY> which stores
+whole perl scalars.  All the other types are faster, but perl scalars give the fewest
+surprises.
 
 =item L</compare_fn>
 
 Choose a custom key-compare function.  The default depends on C<key_type>.
 If this is a perl coderef, the C<key_type> is forced to be L</KEY_TYPE_ANY>.
+Avoid using a coderef if possible.
 
 =item L</allow_duplicates>
 
@@ -102,7 +120,9 @@ the constructor.
 
 This is one of the following values: L</KEY_TYPE_ANY>, L</KEY_TYPE_INT>,
 L</KEY_TYPE_FLOAT>, L</KEY_TYPE_BSTR>, or L</KEY_TYPE_USTR>.
-See the description in EXPORTS for full details on each.
+See the description in EXPORTS for full details on each.  If importing constants
+is annoying, you can specify these simply as C<"any">, C<"int">, C<"float">,
+C<"bstr">, and C<"ustr">.
 
 Integers are of course the most efficient, followed by floats, followed by
 byte-strings and unicode-strings, followed by 'ANY' (which stores a whole
@@ -118,7 +138,7 @@ the constructor.
 This is one of: L</CMP_PERL>, L</CMP_INT>, L</CMP_FLOAT>, L</CMP_MEMCMP>,
 L</CMP_UTF8>, or a coderef.
 
-If given as a perl coderef, it should take two parameters and return an integer
+If set to a perl coderef, it should take two parameters and return an integer
 indicating their order in the same manner as Perl's C<cmp>.
 Note that this forces C<< key_type => KEY_TYPE_ANY >>.
 Beware that using a custom coderef throws away most of the speed gains from using
@@ -189,7 +209,8 @@ You can also use Tree::RB's lookup-mode constants of "LUEQUAL", etc.
 
 Associate the key with a new value.  If the key previously existed, this returns
 the old value, and updates the tree to reference the new value.  If the tree
-allows duplicate keys, this will replace all nodes having this key.
+allows duplicate keys, this will replace all nodes having this key (but only return
+one of them).
 
 =head2 insert
 
@@ -203,11 +224,13 @@ node after all nodes of the same key, preserving the insertion order.
   my $count= $tree->delete($key);
                   ->delete($key1, $key2);
                   ->delete($node1, $node2);
+                  ->delete($start, $tree->get($limit, GET_LT));
 
 Delete any node with a key identical to C<$key>, and return the number of nodes
 removed.  If you supply two keys (or two nodes) this will delete those nodes and
-all nodes inbetween; $key1 is searched with mode GET_GE and key2 is searches with
-mode GET_LE, so the keys themselves do not need to be found in the tree.
+all nodes inbetween; C<$key1> is searched with mode C<GET_GE> and C<$key2> is
+searched with mode C<GET_LE>, so the keys themselves do not need to be found in
+the tree.
 The keys (or nodes) most be given in ascending order, else no nodes are deleted.
 
 If you want to delete a range *exclusive* of one or both ends of the range, just
@@ -333,53 +356,82 @@ Unicode correctly.  (for correct unicode, use C<KEY_TYPE_ANY>, but it's slower..
 
 =back
 
+=head2 Comparison Functions
+
+Export all with ':cmp'
+
+=over
+
+=item CMP_PERL
+
+Use Perl's C<cmp> function.  This forces the keys of the nodes to be stored as
+Perl Scalars.
+
+=item CMP_INT
+
+Compare keys directly as C integers.  This is the fastest option.
+
+=item CMP_FLOAT
+
+Compare the keys directly as C 'double' values.
+
+=item CMP_UTF8
+
+Compare the keys as UTF8 byte strings, using Perl's internal C<bytes_cmp_utf8> function.
+
+=item CMP_MEMCMP
+
+Compare the keys using C's C<memcmp> function.
+
+=back
+
 =head2 Lookup Mode
 
 Export all with ':lookup'
 
 =over
 
-=item LU_EQ
+=item GET_EQ
 
 Return an exact match.  If duplicate keys are present, this returns the
 first (leftmost) of the matching nodes.
 Has alias C<LUEQUAL> to match Tree::RB.
 
-=item LU_GE
+=item GET_GE
 
 Return the first exact match, or the first node greater than the key,
 or C<undef> if the key is greater than any node.
 Has alias C<LUGTEQ> to match Tree:RB.
 
-=item LU_LE
+=item GET_LE
 
 Return the first exact match, or the last node less than the key,
 Return the key is less than any node.
 Has alias C<LULTEQ> to match Tree::RB.
 
-=item LU_GT
+=item GET_GT
 
 Return the first node greater than the key,
 or C<undef> if the key is greater than any node.
 Has alias C<LUGREAT> to match Tree::RB.
 
-=item LU_LT
+=item GET_LT
 
 Return the last node less than the key,
 Return the key is less than any node.
 Has alias C<LULESS> to match Tree::RB.
 
-=item LU_NEXT
+=item GET_NEXT
 
 Look for the last node matching the specified key (returning C<undef> if not found)
-then return C<< $node->next >>.  This is the same as C<LU_GT> except it ensures the
+then return C<< $node->next >>.  This is the same as C<GET_GT> except it ensures the
 key existed.
 Has alias C<LUNEXT> to match Tree::RB.
 
-=item LU_PREV
+=item GET_PREV
 
 Look for the first node matching the specified key (returning C<undef> if not found)
-then return C<< $node->prev >>.  This is the same as C<LU_LT> except it ensures the
+then return C<< $node->prev >>.  This is the same as C<GET_LT> except it ensures the
 key existed.
 Has alias C<LUPREV> to match Tree::RB.
 
@@ -387,12 +439,12 @@ Has alias C<LUPREV> to match Tree::RB.
 
 =cut
 
-*LUEQUAL= *LU_EQ;
-*LUGTEQ=  *LU_GE;
-*LUGTLT=  *LU_LE;
-*LUGREAT= *LU_GT;
-*LULESS=  *LU_LT;
-*LUPREV=  *LU_PREV;
-*LUNEXT=  *LU_NEXT;
+*LUEQUAL= *GET_EQ;
+*LUGTEQ=  *GET_GE;
+*LUGTLT=  *GET_LE;
+*LUGREAT= *GET_GT;
+*LULESS=  *GET_LT;
+*LUPREV=  *GET_PREV;
+*LUNEXT=  *GET_NEXT;
 
 1;

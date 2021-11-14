@@ -113,14 +113,14 @@ static const char * get_cmp_name(int cmp_id) {
 	}
 }
 
-#define LU_EQ   0
-#define LU_GE   1
-#define LU_LE   2
-#define LU_GT   3
-#define LU_LT   4
-#define LU_NEXT 5
-#define LU_PREV 6
-#define LU_MAX  6
+#define GET_EQ   0
+#define GET_GE   1
+#define GET_LE   2
+#define GET_GT   3
+#define GET_LT   4
+#define GET_NEXT 5
+#define GET_PREV 6
+#define GET_MAX  6
 
 static int parse_lookup_mode(SV *mode_sv) {
 	int mode;
@@ -130,35 +130,35 @@ static int parse_lookup_mode(SV *mode_sv) {
 	mode= -1;
 	if (SvIOK(mode_sv)) {
 		mode= SvIV(mode_sv);
-		if (mode < 0 || mode > LU_MAX)
+		if (mode < 0 || mode > GET_MAX)
 			mode= -1;
 	} else if (SvPOK(mode_sv)) {
 		mode_str= SvPV(mode_sv, len);
-		if (len > 3 && mode_str[0] == 'L' && mode_str[1] == 'U' && mode_str[2] == '_') {
-			mode_str+= 3;
-			len -= 3;
+		if (len > 4 && foldEQ(mode_str, "GET_", 4)) {
+			mode_str+= 4;
+			len -= 4;
 		}
 		// Allow alternate syntax of "==" etc, 'eq' etc, or any of the official constant names
 		switch (mode_str[0]) {
-		case '<': mode= len == 1? LU_LT : len == 2 && mode_str[1] == '='? LU_LE : -1; break;
-		case '>': mode= len == 1? LU_GT : len == 2 && mode_str[1] == '='? LU_GE : -1; break;
-		case '=': mode= len == 2 && mode_str[1] == '='? LU_EQ : -1; break;
-		case '-': mode= len == 2 && mode_str[1] == '-'? LU_PREV : -1; break;
-		case '+': mode= len == 2 && mode_str[1] == '+'? LU_NEXT : -1; break;
+		case '<': mode= len == 1? GET_LT : len == 2 && mode_str[1] == '='? GET_LE : -1; break;
+		case '>': mode= len == 1? GET_GT : len == 2 && mode_str[1] == '='? GET_GE : -1; break;
+		case '=': mode= len == 2 && mode_str[1] == '='? GET_EQ : -1; break;
+		case '-': mode= len == 2 && mode_str[1] == '-'? GET_PREV : -1; break;
+		case '+': mode= len == 2 && mode_str[1] == '+'? GET_NEXT : -1; break;
 		case 'E': case 'e':
-		          mode= len == 2 && (mode_str[1] == 'q' || mode_str[1] == 'Q')? LU_EQ : -1; break;
+		          mode= len == 2 && (mode_str[1] == 'q' || mode_str[1] == 'Q')? GET_EQ : -1; break;
 		case 'G': case 'g':
-		          mode= len == 2 && (mode_str[1] == 't' || mode_str[1] == 'T')? LU_GT
-                      : len == 2 && (mode_str[1] == 'e' || mode_str[1] == 'E')? LU_GE
+		          mode= len == 2 && (mode_str[1] == 't' || mode_str[1] == 'T')? GET_GT
+                      : len == 2 && (mode_str[1] == 'e' || mode_str[1] == 'E')? GET_GE
 		              : -1;
 		          break;
 		case 'L': case 'l':
-		          mode= len == 2 && (mode_str[1] == 't' || mode_str[1] == 'T')? LU_LT
-                      : len == 2 && (mode_str[1] == 'e' || mode_str[1] == 'E')? LU_LE
+		          mode= len == 2 && (mode_str[1] == 't' || mode_str[1] == 'T')? GET_LT
+                      : len == 2 && (mode_str[1] == 'e' || mode_str[1] == 'E')? GET_LE
 		              : -1;
 		          break;
-		case 'P': case 'p': mode= foldEQ(mode_str, "PREV", 4)? LU_PREV : -1; break;
-		case 'N': case 'n': mode= foldEQ(mode_str, "NEXT", 4)? LU_NEXT : -1; break;
+		case 'P': case 'p': mode= foldEQ(mode_str, "PREV", 4)? GET_PREV : -1; break;
+		case 'N': case 'n': mode= foldEQ(mode_str, "NEXT", 4)? GET_NEXT : -1; break;
 		}
 	}
 	return mode;
@@ -829,7 +829,7 @@ get(tree, key, mode_sv= NULL)
 	PPCODE:
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
-		mode= mode_sv? parse_lookup_mode(mode_sv) : LU_EQ;
+		mode= mode_sv? parse_lookup_mode(mode_sv) : GET_EQ;
 		if (mode < 0)
 			croak("Invalid lookup mode %s", SvPV_nolen(mode_sv));
 		// create a fake item to act as a search key
@@ -838,7 +838,7 @@ get(tree, key, mode_sv= NULL)
 		if (ix > 1 && tree->compat_list_context)
 			ix -= 2;
 		// If this is a simple 'get = key' returning a value, call the simpler rbtree_find_nearest
-		if ((ix == 2 || GIMME_V == G_SCALAR) && mode == LU_EQ) {
+		if ((ix == 2 || GIMME_V == G_SCALAR) && mode == GET_EQ) {
 			node= rbtree_find_nearest(
 				&tree->root_sentinel,
 				&stack_item, // The item *is* the key that gets passed to the compare function
@@ -861,25 +861,25 @@ get(tree, key, mode_sv= NULL)
 		) {
 			// Found an exact match.  First and last are the range of nodes matching.
 			switch (mode) {
-			case LU_EQ:
-			case LU_GE:
-			case LU_LE: node= first; break;
-			case LU_LT:
-			case LU_PREV: node= rbtree_node_prev(first); break;
-			case LU_GT:
-			case LU_NEXT: node= rbtree_node_next(last); break;
+			case GET_EQ:
+			case GET_GE:
+			case GET_LE: node= first; break;
+			case GET_LT:
+			case GET_PREV: node= rbtree_node_prev(first); break;
+			case GET_GT:
+			case GET_NEXT: node= rbtree_node_next(last); break;
 			default: croak("BUG: unhandled mode");
 			}
 		} else {
 			// Didn't find an exact match.  First and last are the bounds of what would have matched.
 			switch (mode) {
-			case LU_EQ: node= NULL; break;
-			case LU_GE:
-			case LU_GT: node= last; break;
-			case LU_LE:
-			case LU_LT: node= first; break;
-			case LU_PREV:
-			case LU_NEXT: node= NULL; break;
+			case GET_EQ: node= NULL; break;
+			case GET_GE:
+			case GET_GT: node= last; break;
+			case GET_LE:
+			case GET_LT: node= first; break;
+			case GET_PREV:
+			case GET_NEXT: node= NULL; break;
 			default: croak("BUG: unhandled mode");
 			}
 		}
@@ -1186,12 +1186,12 @@ BOOT:
 	EXPORT_ENUM(CMP_FLOAT);
 	EXPORT_ENUM(CMP_UTF8);
 	EXPORT_ENUM(CMP_MEMCMP);
-	EXPORT_ENUM(LU_EQ);
-	EXPORT_ENUM(LU_GE);
-	EXPORT_ENUM(LU_LE);
-	EXPORT_ENUM(LU_GT);
-	EXPORT_ENUM(LU_LT);
-	EXPORT_ENUM(LU_NEXT);
-	EXPORT_ENUM(LU_PREV);
+	EXPORT_ENUM(GET_EQ);
+	EXPORT_ENUM(GET_GE);
+	EXPORT_ENUM(GET_LE);
+	EXPORT_ENUM(GET_GT);
+	EXPORT_ENUM(GET_LT);
+	EXPORT_ENUM(GET_NEXT);
+	EXPORT_ENUM(GET_PREV);
 
 PROTOTYPES: DISABLE
