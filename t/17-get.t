@@ -65,4 +65,12 @@ subtest custom_tree => sub {
 	undef $tree; # test destructor
 };
 
+subtest get_all => sub {
+	my $tree= Tree::RB::XS->new;
+	$tree->allow_duplicates(1);
+	$tree->insert($_ => $_) for 1..20;
+	$tree->insert(5 => 'X'.(5-$_)) for 0..4;
+	is( [ $tree->get_all(5) ], [qw( 5 X5 X4 X3 X2 X1 )], 'all values, in insertion order' );
+};
+
 done_testing;

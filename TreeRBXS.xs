@@ -14,7 +14,58 @@
 #define KEY_TYPE_USTR  6
 #define KEY_TYPE_MAX   6
 
-#define NEW_ENUM_DUALVAR(x) new_enum_dualvar(x, newSVpvs_share(#x))
+#define LU_EQ   0
+#define LU_GE   1
+#define LU_LE   2
+#define LU_GT   3
+#define LU_LT   4
+#define LU_NEXT 5
+#define LU_PREV 6
+#define LU_MAX  6
+
+static int parse_lookup_mode(SV *mode_sv) {
+	int mode;
+	size_t len;
+	char *mode_str;
+
+	mode= -1;
+	if (SvIOK(mode_sv)) {
+		mode= SvIV(mode_sv);
+		if (mode < 0 || mode > LU_MAX)
+			mode= -1;
+	} else if (SvPOK(mode_sv)) {
+		mode_str= SvPV(mode_sv, len);
+		if (len > 3 && mode_str[0] == 'L' && mode_str[1] == 'U' && mode_str[2] == '_') {
+			mode_str+= 3;
+			len -= 3;
+		}
+		// Allow alternate syntax of "==" etc, 'eq' etc, or any of the official constant names
+		switch (mode_str[0]) {
+		case '<': mode= len == 1? LU_LT : len == 2 && mode_str[1] == '='? LU_LE : -1; break;
+		case '>': mode= len == 1? LU_GT : len == 2 && mode_str[1] == '='? LU_GE : -1; break;
+		case '=': mode= len == 2 && mode_str[1] == '='? LU_EQ : -1; break;
+		case '-': mode= len == 2 && mode_str[1] == '-'? LU_PREV : -1; break;
+		case '+': mode= len == 2 && mode_str[1] == '+'? LU_NEXT : -1; break;
+		case 'E': case 'e':
+		          mode= len == 2 && (mode_str[1] == 'q' || mode_str[1] == 'Q')? LU_EQ : -1; break;
+		case 'G': case 'g':
+		          mode= len == 2 && (mode_str[1] == 't' || mode_str[1] == 'T')? LU_GT
+                      : len == 2 && (mode_str[1] == 'e' || mode_str[1] == 'E')? LU_GE
+		              : -1;
+		          break;
+		case 'L': case 'l':
+		          mode= len == 2 && (mode_str[1] == 't' || mode_str[1] == 'T')? LU_LT
+                      : len == 2 && (mode_str[1] == 'e' || mode_str[1] == 'E')? LU_LE
+		              : -1;
+		          break;
+		case 'P': case 'p': mode= foldEQ(mode_str, "PREV", 4)? LU_PREV : -1; break;
+		case 'N': case 'n': mode= foldEQ(mode_str, "NEXT", 4)? LU_NEXT : -1; break;
+		}
+	}
+	return mode;
+}
+
+#define EXPORT_ENUM(x) newCONSTSUB(stash, #x, new_enum_dualvar(x, newSVpvs_share(#x)))
 static SV * new_enum_dualvar(IV ival, SV *name) {
 	SvUPGRADE(name, SVt_PVNV);
 	SvIV_set(name, ival);
@@ -510,7 +561,7 @@ insert(tree, key, val)
 	INIT:
 		struct TreeRBXS_item stack_item, *item;
 		rbtree_node_t *hint= NULL;
-		int cmp;
+		int cmp= 0;
 	CODE:
 		//TreeRBXS_assert_structure(tree);
 		if (!SvOK(key))
@@ -618,6 +669,96 @@ get(tree, key)
 			ST(0)= item->value;
 		}
 		XSRETURN(1);
+
+void
+get_all(tree, key)
+	struct TreeRBXS *tree
+	SV *key
+	INIT:
+		struct TreeRBXS_item stack_item, *item;
+		rbtree_node_t *first;
+		size_t count, i;
+	PPCODE:
+		if (!SvOK(key))
+			croak("Can't use undef as a key");
+		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
+		if (rbtree_find_all(
+			&tree->root_sentinel,
+			&stack_item,
+			(int(*)(void*,void*,void*)) tree->compare,
+			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+			&first, NULL, &count)
+		) {
+			EXTEND(SP, count);
+			for (i= 0; i < count; i++) {
+				item= GET_TreeRBXS_item_FROM_rbnode(first);
+				ST(i)= item->value;
+				first= rbtree_node_next(first);
+			}
+		} else
+			count= 0;
+		XSRETURN(count);
+
+void
+lookup(tree, key, mode_sv)
+	struct TreeRBXS *tree
+	SV *key
+	SV *mode_sv
+	INIT:
+		struct TreeRBXS_item stack_item, *item;
+		rbtree_node_t *first, *last, *node= NULL;
+		int cmp, mode, len;
+		const char *mode_str;
+	PPCODE:
+		if (!SvOK(key))
+			croak("Can't use undef as a key");
+		if ((mode= parse_lookup_mode(mode_sv)) < 0)
+			croak("Invalid lookup mode %s", SvPV_nolen(mode_sv));
+
+		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
+		ST(0)= &PL_sv_undef;
+		if (rbtree_find_all(
+			&tree->root_sentinel,
+			&stack_item,
+			(int(*)(void*,void*,void*)) tree->compare,
+			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+			&first, &last, NULL)
+		) {
+			// Found an exact match.  First and last are the range of nodes matching.
+			switch (mode) {
+			case LU_EQ:
+			case LU_GE:
+			case LU_LE: node= first; break;
+			case LU_LT:
+			case LU_PREV: node= rbtree_node_prev(first); break;
+			case LU_GT:
+			case LU_NEXT: node= rbtree_node_next(last); break;
+			default: croak("BUG: unhandled mode");
+			}
+		} else {
+			// Didn't find an exact match.  First and last are the bounds of what would have matched.
+			switch (mode) {
+			case LU_EQ: node= NULL; break;
+			case LU_GE:
+			case LU_GT: node= last; break;
+			case LU_LE:
+			case LU_LT: node= first; break;
+			case LU_PREV:
+			case LU_NEXT: node= NULL; break;
+			default: croak("BUG: unhandled mode");
+			}
+		}
+		if (node) {
+			item= GET_TreeRBXS_item_FROM_rbnode(node);
+			ST(0)= item->value;
+			if (GIMME_V == G_ARRAY)
+				ST(1)= sv_2mortal(TreeRBXS_wrap_item(item));
+		} else {
+			ST(0)= &PL_sv_undef;
+			if (GIMME_V == G_ARRAY)
+				ST(1)= &PL_sv_undef;
+		}
+		XSRETURN(GIMME_V == G_ARRAY? 2 : 1);
 
 struct TreeRBXS_item *
 get_node(tree, key)
@@ -739,6 +880,14 @@ value(item, newval=NULL)
 	OUTPUT:
 		RETVAL
 
+IV
+index(item)
+	struct TreeRBXS_item *item
+	CODE:
+		RETVAL= rbtree_node_index(&item->rbnode);
+	OUTPUT:
+		RETVAL
+
 struct TreeRBXS_item *
 prev(item)
 	struct TreeRBXS_item *item
@@ -820,11 +969,18 @@ prune(item)
 
 BOOT:
 	HV* stash= gv_stashpvn("Tree::RB::XS", 12, 1);
-	newCONSTSUB(stash, "KEY_TYPE_ANY",   NEW_ENUM_DUALVAR(KEY_TYPE_ANY));
-	newCONSTSUB(stash, "KEY_TYPE_INT",   NEW_ENUM_DUALVAR(KEY_TYPE_INT));
-	newCONSTSUB(stash, "KEY_TYPE_FLOAT", NEW_ENUM_DUALVAR(KEY_TYPE_FLOAT));
-	newCONSTSUB(stash, "KEY_TYPE_USTR",  NEW_ENUM_DUALVAR(KEY_TYPE_USTR));
-	newCONSTSUB(stash, "KEY_TYPE_BSTR",  NEW_ENUM_DUALVAR(KEY_TYPE_BSTR));
-	newCONSTSUB(stash, "KEY_TYPE_CLAIM", NEW_ENUM_DUALVAR(KEY_TYPE_CLAIM));
+	EXPORT_ENUM(KEY_TYPE_ANY);
+	EXPORT_ENUM(KEY_TYPE_INT);
+	EXPORT_ENUM(KEY_TYPE_FLOAT);
+	EXPORT_ENUM(KEY_TYPE_USTR);
+	EXPORT_ENUM(KEY_TYPE_BSTR);
+	EXPORT_ENUM(KEY_TYPE_CLAIM);
+	EXPORT_ENUM(LU_EQ);
+	EXPORT_ENUM(LU_GE);
+	EXPORT_ENUM(LU_LE);
+	EXPORT_ENUM(LU_GT);
+	EXPORT_ENUM(LU_LT);
+	EXPORT_ENUM(LU_NEXT);
+	EXPORT_ENUM(LU_PREV);
 
 PROTOTYPES: DISABLE

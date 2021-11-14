@@ -9,7 +9,14 @@ use Carp;
 require XSLoader;
 XSLoader::load('Tree::RB::XS', $Tree::RB::XS::VERSION);
 use Exporter 'import';
-our @EXPORT_OK= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_BSTR KEY_TYPE_USTR );
+our @_key_types= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_BSTR KEY_TYPE_USTR );
+our @_lookup_modes= qw( LU_EQ LU_GT LU_LT LU_GE LU_LE LU_NEXT LU_PREV
+                        LUEQUAL LUGTEQ LULTEQ LUGREAT LULESS LUNEXT LUPREV );
+our @EXPORT_OK= (@_key_types, @_lookup_modes);
+our %EXPORT_TAGS= (
+	key_type => \@_key_types,
+	lookup   => \@_lookup_modes,
+);
 
 =head1 SYNOPSIS
 
@@ -146,6 +153,15 @@ Fetch a value form the tree, by its key.  Unlike L<Tree::RB/get>, this always
 returns a single value, regardless of list context, and does not accept options
 for how to find nearby keys.
 
+=head2 get_all
+
+  my @values= $tree->get_all($key);
+
+If you L</allow_duplicates>, this method is useful to return the values of all
+nodes that match the key.  This can be more efficient than stepping node-to-node
+for small numbers of duplicates, but beware that large numbers of duplicate could
+have an adverse affect on Perl's stack.
+
 =head2 get_node
 
 Same as L</get>, but returns the node instead of the value.
@@ -253,6 +269,10 @@ but all attributes linking to other nodes will become C<undef>.
 
 =head1 EXPORTS
 
+=head2 Key Types
+
+Export all with ':key_type';
+
 =over
 
 =item KEY_TYPE_ANY
@@ -285,6 +305,66 @@ Unicode correctly.  (for correct unicode, use C<KEY_TYPE_ANY>, but it's slower..
 
 =back
 
+=head2 Lookup Mode
+
+Export all with ':lookup'
+
+=over
+
+=item LU_EQ
+
+Return an exact match.  If duplicate keys are present, this returns the
+first (leftmost) of the matching nodes.
+Has alias C<LUEQUAL> to match Tree::RB.
+
+=item LU_GE
+
+Return the first exact match, or the first node greater than the key,
+or C<undef> if the key is greater than any node.
+Has alias C<LUGTEQ> to match Tree:RB.
+
+=item LU_LE
+
+Return the first exact match, or the last node less than the key,
+Return the key is less than any node.
+Has alias C<LULTEQ> to match Tree::RB.
+
+=item LU_GT
+
+Return the first node greater than the key,
+or C<undef> if the key is greater than any node.
+Has alias C<LUGREAT> to match Tree::RB.
+
+=item LU_LT
+
+Return the last node less than the key,
+Return the key is less than any node.
+Has alias C<LULESS> to match Tree::RB.
+
+=item LU_NEXT
+
+Look for the last node matching the specified key (returning C<undef> if not found)
+then return C<< $node->next >>.  This is the same as C<LU_GT> except it ensures the
+key existed.
+Has alias C<LUNEXT> to match Tree::RB.
+
+=item LU_PREV
+
+Look for the first node matching the specified key (returning C<undef> if not found)
+then return C<< $node->prev >>.  This is the same as C<LU_LT> except it ensures the
+key existed.
+Has alias C<LUPREV> to match Tree::RB.
+
+=back
+
 =cut
+
+*LUEQUAL= *LU_EQ;
+*LUGTEQ=  *LU_GE;
+*LUGTLT=  *LU_LE;
+*LUGREAT= *LU_GT;
+*LULESS=  *LU_LT;
+*LUPREV=  *LU_PREV;
+*LUNEXT=  *LU_NEXT;
 
 1;
