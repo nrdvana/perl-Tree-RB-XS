@@ -1,3 +1,11 @@
+Version 0.02 - 2021-11-15
+
+  - New CMP_NUMSPLIT comparison function
+  - New get_node shortcuts: get_node_last, get_node_le, get_node_le_last,
+     get_node_lt, get_node_ge, get_node_gt.
+  - Code cleanup
+  - Minor documentation fixes
+
 Version 0.01 - 2021-11-15
 
   - Finished implementing almost all methods of Tree::RB
