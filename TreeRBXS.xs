@@ -63,6 +63,7 @@ static TreeRBXS_cmp_fn TreeRBXS_cmp_int;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_float;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_memcmp;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_utf8;
+static TreeRBXS_cmp_fn TreeRBXS_cmp_numsplit;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_perl;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_perl_cb;
 
@@ -72,7 +73,8 @@ static TreeRBXS_cmp_fn TreeRBXS_cmp_perl_cb;
 #define CMP_MEMCMP  4
 #define CMP_UTF8    5
 #define CMP_SUB     6
-#define CMP_MAX     6
+#define CMP_NUMSPLIT 7
+#define CMP_MAX     7
 
 static int parse_cmp_fn(SV *cmp_sv) {
 	const char *str;
@@ -96,6 +98,7 @@ static int parse_cmp_fn(SV *cmp_sv) {
 		      : (len == 5 && foldEQ(str, "FLOAT",  5))? CMP_FLOAT
 		      : (len == 6 && foldEQ(str, "MEMCMP", 6))? CMP_MEMCMP
 		      : (len == 4 && foldEQ(str, "UTF8",   4))? CMP_UTF8
+		      : (len == 8 && foldEQ(str, "NUMSPLIT", 8))? CMP_NUMSPLIT
 		    //: (len == 7 && foldEQ(str, "SUB",    3))? CMP_SUB   can only be requested by a CV*
 		      : -1;
 	}
@@ -109,6 +112,7 @@ static const char * get_cmp_name(int cmp_id) {
 	case CMP_FLOAT:  return "CMP_FLOAT";
 	case CMP_MEMCMP: return "CMP_MEMCMP";
 	case CMP_UTF8:   return "CMP_UTF8";
+	case CMP_NUMSPLIT: return "CMP_NUMSPLIT";
 	default: return NULL;
 	}
 }
@@ -384,6 +388,78 @@ static int TreeRBXS_cmp_utf8(struct TreeRBXS *tree, struct TreeRBXS_item *a, str
 	);
 }
 
+static int TreeRBXS_cmp_numsplit(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
+	const char *apos, *alim, *amark;
+	const char *bpos, *blim, *bmark;
+	size_t alen, blen;
+	int cmp;
+
+	switch (tree->key_type) {
+	case KEY_TYPE_USTR:
+	case KEY_TYPE_BSTR:
+		apos= a->keyunion.ckey; alim= apos + a->ckeylen;
+		bpos= b->keyunion.ckey; blim= bpos + b->ckeylen;
+		break;
+	case KEY_TYPE_ANY:
+	case KEY_TYPE_CLAIM:
+		apos= SvPV(a->keyunion.svkey, alen); alim= apos + alen;
+		bpos= SvPV(b->keyunion.svkey, blen); blim= bpos + blen;
+		break;
+	default: croak("BUG");
+	}
+
+	while (apos < alim && bpos < blim) {
+		// find the next start of digits along the strings
+		amark= apos;
+		while (apos < alim && !isdigit(*apos)) apos++;
+		bmark= bpos;
+		while (bpos < blim && !isdigit(*bpos)) bpos++;
+		alen= apos - amark;
+		blen= bpos - bmark;
+		// compare the non-digit portions found in each string
+		if (alen || blen) {
+			// If one of the non-digit spans was length=0, then we are comparing digits
+			// with string, and digits sort first.
+			if (alen == 0) return -1;
+			if (blen == 0) return 1;
+			// else compare the portions in common.
+			if (tree->key_type != KEY_TYPE_BSTR) {
+				cmp= bytes_cmp_utf8((unsigned char*)amark, alen, (unsigned char*)bmark, blen);
+				if (cmp) return cmp;
+			} else {
+				cmp= memcmp(amark, bmark, alen < blen? alen : blen);
+				if (cmp) return cmp;
+				if (alen < blen) return -1;
+				if (alen > blen) return -1;
+			}
+		}
+		// If one of the strings ran out of characters, it is the lesser one.
+		if (!(apos < alim && bpos < blim)) break;
+		// compare the digit portions found in each string
+		// Find the start and end of nonzero digits in A
+		while (apos < alim && *apos == '0') apos++;
+		amark= apos;
+		while (apos < alim && isdigit(*apos)) apos++;
+		// Find the start and end of nonzero digits in B
+		while (bpos < blim && *bpos == '0') bpos++;
+		bmark= bpos;
+		while (bpos < blim && isdigit(*bpos)) bpos++;
+		// Whichever number is longr is greater
+		alen= apos - amark;
+		blen= bpos - bmark;
+		if (alen < blen) return -1;
+		if (alen > blen) return 1;
+		// Else they're the same length, so strcmp to find the winner.
+		cmp= memcmp(amark, bmark, alen);
+		if (cmp) return cmp;
+		// Else they're equal, continue to the next component.
+	}
+	// One or both of the strings ran out of characters
+	if (bpos < blim) return -1;
+	if (apos < alim) return 1;
+	return 0;
+}
+
 // Compare SV items using Perl's 'cmp' operator
 static int TreeRBXS_cmp_perl(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
 	return sv_cmp(a->keyunion.svkey, b->keyunion.svkey);
@@ -620,7 +696,7 @@ _init_tree(obj, key_type_sv, compare_fn)
 			croak("_init_tree called on non-object");
 		
 		// parse key type and compare_fn
-		key_type= SvOK(key_type_sv)? parse_key_type(key_type_sv) : KEY_TYPE_ANY;
+		key_type= SvOK(key_type_sv)? parse_key_type(key_type_sv) : 0;
 		if (key_type < 0)
 			croak("invalid key_type %s", SvPV_nolen(key_type_sv));
 		
@@ -635,9 +711,7 @@ _init_tree(obj, key_type_sv, compare_fn)
 			      : key_type == KEY_TYPE_USTR?  CMP_UTF8
 			      : key_type == KEY_TYPE_ANY?   CMP_PERL /* use Perl's cmp operator */
 			      : key_type == KEY_TYPE_CLAIM? CMP_PERL
-			      : 0;
-			if (!cmp_id)
-				croak("BUG: unhandled key_type");
+			      : CMP_PERL;
 		}
 		
 		tree= TreeRBXS_get_magic_tree(obj, AUTOCREATE|OR_DIE);
@@ -672,6 +746,11 @@ _init_tree(obj, key_type_sv, compare_fn)
 		case CMP_UTF8:
 			tree->key_type= KEY_TYPE_USTR;
 			tree->compare= TreeRBXS_cmp_utf8;
+			break;
+		case CMP_NUMSPLIT:
+			tree->key_type= key_type == KEY_TYPE_BSTR || key_type == KEY_TYPE_USTR
+				|| key_type == KEY_TYPE_ANY || key_type == KEY_TYPE_CLAIM? key_type : KEY_TYPE_BSTR;
+			tree->compare= TreeRBXS_cmp_numsplit;
 			break;
 		default:
 			croak("BUG: unhandled cmp_id");
@@ -1254,6 +1333,7 @@ BOOT:
 	EXPORT_ENUM(CMP_FLOAT);
 	EXPORT_ENUM(CMP_UTF8);
 	EXPORT_ENUM(CMP_MEMCMP);
+	EXPORT_ENUM(CMP_NUMSPLIT);
 	EXPORT_ENUM(GET_EQ);
 	EXPORT_ENUM(GET_EQ_LAST);
 	EXPORT_ENUM(GET_GE);

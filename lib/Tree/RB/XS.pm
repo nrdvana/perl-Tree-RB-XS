@@ -10,7 +10,7 @@ require XSLoader;
 XSLoader::load('Tree::RB::XS', $Tree::RB::XS::VERSION);
 use Exporter 'import';
 our @_key_types= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_BSTR KEY_TYPE_USTR );
-our @_cmp_enum= qw( CMP_PERL CMP_INT CMP_FLOAT CMP_MEMCMP CMP_UTF8 );
+our @_cmp_enum= qw( CMP_PERL CMP_INT CMP_FLOAT CMP_MEMCMP CMP_UTF8 CMP_NUMSPLIT );
 our @_lookup_modes= qw( GET_EQ GET_EQ_LAST GET_GT GET_LT GET_GE GET_LE GET_LE_LAST GET_NEXT GET_PREV
                         LUEQUAL LUGTEQ LULTEQ LUGREAT LULESS LUNEXT LUPREV );
 our @EXPORT_OK= (@_key_types, @_cmp_enum, @_lookup_modes);
@@ -18,6 +18,7 @@ our %EXPORT_TAGS= (
 	key_type => \@_key_types,
 	cmp      => \@_cmp_enum,
 	lookup   => \@_lookup_modes,
+	all      => \@EXPORT_OK,
 );
 
 =head1 SYNOPSIS
@@ -159,7 +160,7 @@ Specifies the function that compares keys.  Read-only; pass as an option to
 the constructor.
 
 This is one of: L</CMP_PERL>, L</CMP_INT>, L</CMP_FLOAT>, L</CMP_MEMCMP>,
-L</CMP_UTF8>, or a coderef.
+L</CMP_UTF8>, L</CMP_NUMSPLIT>, or a coderef.
 
 If set to a perl coderef, it should take two parameters and return an integer
 indicating their order in the same manner as Perl's C<cmp>.
@@ -520,6 +521,43 @@ Compare the keys as UTF8 byte strings, using Perl's internal C<bytes_cmp_utf8> f
 =item CMP_MEMCMP
 
 Compare the keys using C's C<memcmp> function.
+
+=item CMP_NUMSPLIT
+
+Compare using the equivalent of this coderef:
+
+  sub {
+    my @a_parts= split /([0-9]+)/, $_[0];
+    my @b_parts= split /([0-9]+)/, $_[1];
+    my $i= 0;
+    while ($i < @a_parts || $i < @b_parts) {
+      no warnings 'uninitialized';
+      my $cmp= ($i & 1)? ($a_parts[$i] <=> $b_parts[$i])
+             : ($a_parts[$i] cmp $b_parts[$i]);
+      return $cmp if $cmp;
+      ++$i;
+    }
+    return 0;
+  }
+
+except the XS implementation is not limited by the integer size of perl,
+and operates directly on the strings without splitting anything. (i.e. much faster)
+
+This results in a sort where integer portions of a string are sorted numerically,
+and any non-digit segment is compared as a string.  This produces sort-orders like
+the following:
+
+  2020-01-01
+  2020-4-7
+  2020-10-12
+
+or
+
+  14.4.2
+  14.14.0
+
+If the C<key_type> is C<KEY_TYPE_BSTR> this will sort the string portions using
+C<memcmp>, else they are sorted with Perl's unicode-aware sort.
 
 =back
 
