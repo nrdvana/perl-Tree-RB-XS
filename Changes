@@ -1,3 +1,12 @@
+Version 0.01 - 2021-11-15
+
+  - Finished implementing almost all methods of Tree::RB
+  - Renamed option 'compat_list_context' to 'compat_list_get'
+    since it only affected the 'get' method.
+  - Add tree methods: root, iter, rev_iter
+  - Add node methods: tree, left_leaf, right_leaf, strip, as_lol
+    min, max, successor, predecessor
+
 Version 0.00_03 - 2021-11-14
 
   - KEY_TYPE_USTR now uses a correct unicode comparison function.
