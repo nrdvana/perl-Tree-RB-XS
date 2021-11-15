@@ -242,8 +242,8 @@ L</GET_EQ>, L</GET_EQ_LAST>, L</GET_LE>, L</GET_LE_LAST>, L</GET_LT>, L</GET_GE>
 =head2 get_node
 
 Same as L</get>, but returns the node instead of the value.  In trees with
-duplicate keys, this always returns the first node.  (nodes with identical keys
-are preserved in the order they were added)
+duplicate keys, this returns the first matching node.
+(nodes with identical keys are preserved in the order they were added)
 
 Aliases with built-in mode constants:
 
@@ -284,8 +284,8 @@ You can also use Tree::RB's lookup-mode constants of "LUEQUAL", etc.
 
 Associate the key with a new value.  If the key previously existed, this returns
 the old value, and updates the tree to reference the new value.  If the tree
-allows duplicate keys, this will replace all nodes having this key (but only return
-one of them).
+allows duplicate keys, this will remove all but one node having this key and
+then set its value.  Only the first old value will be returned.
 
 =head2 insert
 
@@ -299,18 +299,18 @@ node after all nodes of the same key, preserving the insertion order.
   my $count= $tree->delete($key);
                   ->delete($key1, $key2);
                   ->delete($node1, $node2);
-                  ->delete($start, $tree->get($limit, GET_LT));
+                  ->delete($start, $tree->get_node_lt($limit));
 
 Delete any node with a key identical to C<$key>, and return the number of nodes
 removed.  If you supply two keys (or two nodes) this will delete those nodes and
 all nodes inbetween; C<$key1> is searched with mode C<GET_GE> and C<$key2> is
 searched with mode C<GET_LE>, so the keys themselves do not need to be found in
 the tree.
-The keys (or nodes) most be given in ascending order, else no nodes are deleted.
+The keys (or nodes) must be given in ascending order, else no nodes are deleted.
 
 If you want to delete a range *exclusive* of one or both ends of the range, just
-use the C</get> method with the desired mode to look up each end of the nodes that
-you do want removed.
+use the C</get_node> method with the desired mode to look up each end of the nodes
+that you do want removed.
 
 =head2 iter
 
@@ -321,7 +321,7 @@ you do want removed.
 
 Return an iterator object that traverses the tree.  The iterator is a blesed coderef, so you
 can either call it as a fuction or call the C<< ->next >> method.  If the C<$from_key> is
-provided, this starts from C<< $tree->get($key, GET_GE) >>.
+provided, this starts from C<< $tree->get_node($key, GET_GE) >>.
 
 =head2 rev_iter
 
