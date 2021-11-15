@@ -1,3 +1,15 @@
+Version 0.00_03 - 2021-11-14
+
+  - KEY_TYPE_USTR now uses a correct unicode comparison function.
+  - Added option 'compat_array_context'
+  - Comparison functions can now be specified by enum constants
+  - Added api methods get_all, iter, rev_iter
+  - Delete now takes a second optional param to delete a range
+  - Renamed exported constants LU_* to GET_*, and added GET_LE_LAST
+    and GET_EQ_LAST to handle common cases for duplicate keys.
+  - More unit tests
+  - Much more documentation
+
 Version 0.00_02 - 2021-11-13
 
   - Enhanced string-key performance using KEY_TYPE_BSTR and
