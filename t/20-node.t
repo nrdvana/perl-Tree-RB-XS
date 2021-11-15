@@ -46,4 +46,60 @@ is( $tree->min->key, 42 );
 is( $tree->min->prune, 1, 'remove last node' );
 is( $tree->size, 0, 'tree empty' );
 
+subtest as_lol => sub {
+	my $t= Tree::RB::XS->new;
+	$t->put(a => 1);
+	$t->put(b => 2);
+	$t->put(c => 3);
+	is( $t->root->as_lol,
+		[
+			[ '*', '*', 'R:a' ],
+			[ '*', '*', 'R:c' ],
+			'B:b'
+		],
+		'as_lol returns correct structure'
+	);
+};
+
+subtest strip => sub {
+	my $t= Tree::RB::XS->new;
+	$t->put(a => 1);
+	$t->put(b => 2);
+	$t->put(c => 3);
+	my @del;
+	$t->root->strip(sub { push @del, $_[0] });
+	like( \@del, [ object { call key => 'a'; }, object { call key => 'c'; } ]);
+	like( $t->root, object { call key => 'b'; call left => undef; call right => undef; } );
+};
+
+subtest node_ownership => sub {
+	my $tree= Tree::RB::XS->new;
+	{ package canary;
+	  our @dead;
+	  sub new { my $x= $_[1]; bless \$x, $_[0] }
+	  sub DESTROY { push @dead, ${$_[0]} }
+	}
+	$tree->put("test1", canary->new("test1"));
+	$tree->put("test2", canary->new("test2"));
+	my $test1= $tree->root;
+	$test1->prune;
+	is( \@canary::dead, [], 'prune does not free anything' );
+	undef $tree;
+	is( \@canary::dead, ['test2'], 'free tree frees the remaining node' );
+	like( $test1, object {
+		call key => 'test1';
+		call left => undef;
+		call right => undef;
+		call left_leaf => undef;
+		call right_leaf => undef;
+		call tree => undef;
+		call parent => undef;
+		call prev => undef;
+		call next => undef;
+		call count => 0;
+	}, 'node attributes');
+	undef $test1;
+	is( \@canary::dead, ['test2','test1'], 'free node frees value' );
+};
+
 done_testing;

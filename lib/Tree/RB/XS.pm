@@ -57,13 +57,36 @@ trusting it with production data.
 
 This module is a wrapper for a Red/Black Tree implemented in C.  It's primary features over
 other search trees on CPAN are optimized comparisons of keys (speed), C<< O(log N) >>
-node-by-index lookup (which allows the tree to double as a sort of array), and the option to
+node-by-index lookup (which allows the tree to act as an array), and the option to
 allow duplicate keys while preserving insertion order.
 
-The API is close but not identical to L<Tree::RB>, but can be configured to be fully compatible.
-In particular, the C<get> method in this module is not affected by array context unless you
-request C</compat_list_context>.  I also changed the documented names of a few methods, but
-include aliases for the Tree::RB name.
+The API is close but not identical to L<Tree::RB>.
+
+=over
+
+=item *
+
+The C<get> method in this module is not affected by array context, unless you
+request L</compat_list_get>.
+
+=item *
+
+C<resort> is not implemented (would be lots of effort, and unlikely to be needed)
+
+=item *
+
+tie-hash interface and hseek are not implemented.  (not hard, but does anyone need it?)
+
+=item *
+
+Tree structure is not mutable via the attributes of Node, nor can nodes be created
+independent from a tree.
+
+=item *
+
+Many functions have official names changed, but aliases are provided for compatibility.
+
+=back
 
 =head1 CONSTRUCTOR
 
@@ -357,6 +380,15 @@ The number of items in the tree rooted at this node (inclusive)
 
 =back
 
+=cut
+
+*Tree::RB::XS::Node::min=         *Tree::RB::XS::Node::left_leaf;
+*Tree::RB::XS::Node::max=         *Tree::RB::XS::Node::right_leaf;
+*Tree::RB::XS::Node::successor=   *Tree::RB::XS::Node::next;
+*Tree::RB::XS::Node::predecessor= *Tree::RB::XS::Node::prev;
+
+=pod
+
 And the following methods:
 
 =over 10
@@ -366,7 +398,41 @@ And the following methods:
 Remove this single node from the tree.  The node will still have its key and value,
 but all attributes linking to other nodes will become C<undef>.
 
+=item strip
+
+Remove all children of this node, optionally calling a callback for each.
+For compat with L<Tree::RB::Node/strip>.
+
+=item as_lol
+
+Return sub-tree as list-of-lists. (array of arrays rather?)
+For compat with L<Tree::RB::Node/as_lol>.
+
 =back
+
+=cut
+
+sub Tree::RB::XS::Node::strip {
+	my ($self, $cb)= @_;
+	my ($at, $next, $last)= (undef, $self->left_leaf || $self, $self->right_leaf || $self);
+	do {
+		$at= $next;
+		$next= $next->next;
+		if ($at != $self) {
+			$at->prune;
+			$cb->($at) if $cb;
+		}
+	} while ($at != $last);
+}
+
+sub Tree::RB::XS::Node::as_lol {
+	my $self= $_[1] || $_[0];
+	[
+		$self->left? $self->left->as_lol : '*',
+		$self->right? $self->right->as_lol : '*',
+		($self->color? 'R':'B').':'.($self->key||'')
+	]
+}
 
 =head1 EXPORTS
 
