@@ -1,7 +1,7 @@
 package Tree::RB::XS;
 
 # VERSION
-# ABSTRACT: Similar API to Tree::RB implemented in C
+# ABSTRACT: Red/Black Tree implemented in C, with similar API to Tree::RB
 
 use strict;
 use warnings;
@@ -18,6 +18,7 @@ our %EXPORT_TAGS= (
 	key_type => \@_key_types,
 	cmp      => \@_cmp_enum,
 	lookup   => \@_lookup_modes,
+	get      => \@_lookup_modes,
 	all      => \@EXPORT_OK,
 );
 
@@ -26,6 +27,8 @@ our %EXPORT_TAGS= (
 B<NOTICE:> This module is very new and you should give it some thorough testing before
 trusting it with production data.
 
+  use Tree::RB::XS qw/ :key_type :get /;
+  
   my $tree= Tree::RB::XS->new;
   $tree->put($_ => $_) for 'a'..'z';
   say $tree->get('a');
@@ -40,7 +43,7 @@ trusting it with production data.
 
   # optimize for floating-point comparisons
   $tree= Tree::RB::XS->new(key_type => 'float', allow_duplicates => 1);
-  $tree->put(rand() => 1);
+  $tree->put(rand() => 1) for 1..1000;
   $tree->delete(0, $tree->get_node_lt(.5));
 
   # optimize for byte strings
@@ -94,7 +97,7 @@ Many functions have official names changed, but aliases are provided for compati
 =head2 new
 
   my $tree= Tree::RB::XS->new( %OPTIONS );
-                     ...->new( sub($x,$y) { $x cmp $y });
+                     ...->new( \&compare_fn );
 
 Options:
 
@@ -104,13 +107,16 @@ Options:
 
 Choose an optimized storage for keys.  The default is L</KEY_TYPE_ANY> which stores
 whole perl scalars.  All the other types are faster, but perl scalars give the fewest
-surprises.
+surprises.  If importing constants is annoying, you can specify one of C<"any">,
+C<"int">, C<"float">, C<"bstr">, or C<"ustr">.
 
 =item L</compare_fn>
 
-Choose a custom key-compare function.  The default depends on C<key_type>.
-If this is a perl coderef, the C<key_type> is forced to be L</KEY_TYPE_ANY>.
-Avoid using a coderef if possible.
+Choose a custom key-compare function.  The default is C<CMP_PERL> which gives
+you the behavior of Perl's C<cmp> operator.
+You can supply a custom coderef, but avoid doing that if you are concerned about
+speed; consider pre-processing your keys instead, to be able to use one of the
+built-in compare functions.
 
 =item L</allow_duplicates>
 
@@ -144,15 +150,14 @@ the constructor.
 
 This is one of the following values: L</KEY_TYPE_ANY>, L</KEY_TYPE_INT>,
 L</KEY_TYPE_FLOAT>, L</KEY_TYPE_BSTR>, or L</KEY_TYPE_USTR>.
-See the description in EXPORTS for full details on each.  If importing constants
-is annoying, you can specify these simply as C<"any">, C<"int">, C<"float">,
-C<"bstr">, and C<"ustr">.
+See the description in EXPORTS for full details on each.
 
 Integers are of course the most efficient, followed by floats, followed by
 byte-strings and unicode-strings, followed by 'ANY' (which stores a whole
-perl scalar).  BSTR and USTR both save an internal copy of your key, so
-might be a bad idea if your keys are extremely large and nodes are frequently
-added to the tree.
+perl scalar).  BSTR and USTR are both faster than operating on Perl scalars,
+but both save an internal copy of your key and might be a bad idea if your
+keys are extremely large and nodes are frequently added to the tree.
+(modern Perls can copy-on-write to avoid copying the key)
 
 =head2 compare_fn
 
@@ -168,8 +173,9 @@ Note that this forces C<< key_type => KEY_TYPE_ANY >>.
 Beware that using a custom coderef throws away most of the speed gains from using
 this XS variant over plain L<Tree::RB>.
 
-If not provided, the default comparison is chosen to match the C<key_type>,
-with the defult C<KEY_TYPE_ANY> using Perl's own C<cmp> comparator.
+The default comparison is C<CMP_PERL> which is equivalent to Perl's own C<cmp>
+comparator.  If you specify a C<key_type> and not a C<compare_fn>, the default
+comparator depends on the C<key_type>.
 
 Patches welcome, for anyone who wants to expand the list of optimized built-in
 comparison functions.
@@ -230,14 +236,15 @@ Alias: C<nth>
 =head2 get
 
   my $val= $tree->get($key);
-                ->get($key, $mode);
+             ...->get($key, $mode);
 
-Fetch a value from the tree, by its key.  Unlike L<Tree::RB/get>, this always
-returns a single value, regardless of list context.  But, you can set
-L<compat_list_get> to make C<get> an alias for C<lookup>.
+Fetch a value from the tree, by its key.  Unlike L<Tree::RB/get>, this returns a single
+value, regardless of list context.  But, you can set L<compat_list_get> to make C<get>
+an alias for C<lookup>.
 
 Mode can be used to indicate something other than an exact match:
 L</GET_EQ>, L</GET_EQ_LAST>, L</GET_LE>, L</GET_LE_LAST>, L</GET_LT>, L</GET_GE>, L</GET_GT>.
+(described below)
 
 =head2 get_node
 
@@ -297,9 +304,9 @@ node after all nodes of the same key, preserving the insertion order.
 =head2 delete
 
   my $count= $tree->delete($key);
-                  ->delete($key1, $key2);
-                  ->delete($node1, $node2);
-                  ->delete($start, $tree->get_node_lt($limit));
+               ...->delete($key1, $key2);
+               ...->delete($node1, $node2);
+               ...->delete($start, $tree->get_node_lt($limit));
 
 Delete any node with a key identical to C<$key>, and return the number of nodes
 removed.  If you supply two keys (or two nodes) this will delete those nodes and
@@ -315,7 +322,7 @@ that you do want removed.
 =head2 iter
 
   my $iter= $tree->iter;
-                 ->iter($from_key);
+              ...->iter($from_key);
   while (my $node= $iter->()) { ... }
   while (my $node= $iter->next) { ... }
 
@@ -508,11 +515,13 @@ Perl Scalars.
 
 =item CMP_INT
 
-Compare keys directly as C integers.  This is the fastest option.
+Compare keys directly as whatever integer type Perl was compiled with.
+(i.e. 32-bit or 64-bit)  This is the fastest option.
 
 =item CMP_FLOAT
 
-Compare the keys directly as C 'double' values.
+Compare the keys directly as whatever floating-point type Perl was compiled with.
+(i.e. 64-bit double or 80-bit long double)
 
 =item CMP_UTF8
 
@@ -529,13 +538,11 @@ Compare using the equivalent of this coderef:
   sub {
     my @a_parts= split /([0-9]+)/, $_[0];
     my @b_parts= split /([0-9]+)/, $_[1];
-    my $i= 0;
-    while ($i < @a_parts || $i < @b_parts) {
+    for (my $i= 0; $i < @a_parts || $i < @b_parts; $i++) {
       no warnings 'uninitialized';
       my $cmp= ($i & 1)? ($a_parts[$i] <=> $b_parts[$i])
              : ($a_parts[$i] cmp $b_parts[$i]);
       return $cmp if $cmp;
-      ++$i;
     }
     return 0;
   }
