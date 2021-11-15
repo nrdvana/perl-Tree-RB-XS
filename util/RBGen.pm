@@ -107,6 +107,9 @@ $api $nd *${ns}node_right_leaf( $nd *node );
 /* Returns left-most child of this node, or NULL */
 $api $nd *${ns}node_left_leaf( $nd *node );
 
+/* Returns the root-sentinel of the tree this node belongs to, or NULL */
+$api $nd *${ns}node_rootsentinel( $nd *node );
+
 /* Add a node to a tree */
 $api bool ${ns}node_insert( $nd *hint, $nd *node, ${ns}compare_fn cmp_fn, ${cmp_ctx_decl}int cmp_pointer_ofs );
 
@@ -238,6 +241,14 @@ $nd *${ns}node_right_leaf( $nd *node ) {
 	while (NOT_SENTINEL(node->right))
 		node= node->right;
 	return node;
+}
+
+$nd *${ns}node_rootsentinel( $nd *node ) {
+	while (node && node->parent)
+		node= node->parent;
+	// The node might not have been part of the tree, so make extra checks that
+	// this is really a sentinel
+	return node && node->right && node->right->right == node->right? node : NULL;
 }
 
 $nd *${ns}node_prev( $nd *node ) {

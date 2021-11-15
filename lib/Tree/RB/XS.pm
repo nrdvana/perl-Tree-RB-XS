@@ -256,6 +256,10 @@ You may use negative numbers to count down form max.
 
 Alias: C<nth>
 
+=head2 root
+
+Get the root node of the tree, or C<undef> if the tree is empty.
+
 =cut
 
 *min= *min_node;
@@ -312,19 +316,32 @@ The data associated with the node.  Read/Write.
 
 =item prev
 
-The previous node in the sequence of keys.
+The previous node in the sequence of keys.  Alias C<predecessor> for C<Tree::RB::Node> compat.
 
 =item next
 
-The next node in the sequence of keys.
+The next node in the sequence of keys.  Alias C<successor> for C<Tree::RB::Node> compat.
+
+=item tree
+
+The tree this node belongs to.  This becomes C<undef> if the tree is freed or if the node
+is pruned from the tree.
 
 =item left
 
 The left sub-tree.
 
+=item left_leaf
+
+The left-most leaf of the sub-tree.  Alias C<min> for C<Tree::RB::Node> compat.
+
 =item right
 
 The right sub-tree.
+
+=item right_leaf
+
+The right-most child of the sub-tree.  Alias C<max> for C<Tree::RB::Node> compat.
 
 =item parent
 

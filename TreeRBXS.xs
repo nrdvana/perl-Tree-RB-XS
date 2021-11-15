@@ -192,6 +192,9 @@ struct TreeRBXS {
 	rbtree_node_t leaf_sentinel;   // dummy node used by rbtree implementation.
 };
 
+#define OFS_TreeRBXS_FIELD_root_sentinel ( ((char*) &(((struct TreeRBXS*)(void*)10000)->root_sentinel)) - ((char*)10000) )
+#define GET_TreeRBXS_FROM_root_sentinel(node) ((struct TreeRBXS*) (((char*)node) - OFS_TreeRBXS_FIELD_root_sentinel))
+
 #define OFS_TreeRBXS_item_FIELD_rbnode ( ((char*) &(((struct TreeRBXS_item *)(void*)10000)->rbnode)) - ((char*)10000) )
 #define GET_TreeRBXS_item_FROM_rbnode(node) ((struct TreeRBXS_item*) (((char*)node) - OFS_TreeRBXS_item_FIELD_rbnode))
 
@@ -305,7 +308,13 @@ static struct TreeRBXS_item * TreeRBXS_new_item_from_tmp_item(struct TreeRBXS_it
 	return dst;
 }
 
+static struct TreeRBXS* TreeRBXS_item_get_tree(struct TreeRBXS_item *item) {
+	rbtree_node_t *node= rbtree_node_rootsentinel(&item->rbnode);
+	return node? GET_TreeRBXS_FROM_root_sentinel(node) : NULL;
+}
+
 static void TreeRBXS_item_free(struct TreeRBXS_item *item) {
+	//warn("TreeRBXS_item_free");
 	switch (item->key_type) {
 	case KEY_TYPE_ANY:
 	case KEY_TYPE_CLAIM: SvREFCNT_dec(item->keyunion.svkey); break;
@@ -316,6 +325,7 @@ static void TreeRBXS_item_free(struct TreeRBXS_item *item) {
 }
 
 static void TreeRBXS_item_detach_owner(struct TreeRBXS_item* item) {
+	//warn("TreeRBXS_item_detach_owner");
 	/* the MAGIC of owner doens't need changed because the only time this gets called
 	   is when something else is taking care of that. */
 	//if (item->owner != NULL) {
@@ -329,6 +339,7 @@ static void TreeRBXS_item_detach_owner(struct TreeRBXS_item* item) {
 }
 
 static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBXS *unused) {
+	//warn("TreeRBXS_item_detach_tree");
 	//warn("detach tree %p %p key %d", item, tree, (int) item->keyunion.ikey);
 	if (rbtree_node_is_in_tree(&item->rbnode))
 		rbtree_node_prune(&item->rbnode);
@@ -497,7 +508,7 @@ static struct TreeRBXS* TreeRBXS_get_magic_tree(SV *obj, int flags) {
 }
 
 // Return the TreeRBXS_item that was attached to a perl object via MAGIC.
-// The 'obj' should be a referene to a blessed magical SV.
+// The 'obj' should be a reference to a blessed magical SV.
 static struct TreeRBXS_item* TreeRBXS_get_magic_item(SV *obj, int flags) {
 	SV *sv;
 	MAGIC* magic;
@@ -1062,6 +1073,16 @@ nth_node(tree, ofs)
 	OUTPUT:
 		RETVAL
 
+struct TreeRBXS_item *
+root(tree)
+	struct TreeRBXS *tree
+	CODE:
+		RETVAL= !tree->root_sentinel.left->count? NULL
+			: GET_TreeRBXS_item_FROM_rbnode(tree->root_sentinel.left);
+	OUTPUT:
+		RETVAL
+	
+
 #-----------------------------------------------------------------------------
 #  Node Methods
 #
@@ -1132,6 +1153,15 @@ parent(item)
 	OUTPUT:
 		RETVAL
 
+void
+tree(item)
+	struct TreeRBXS_item *item
+	INIT:
+		struct TreeRBXS *tree= TreeRBXS_item_get_tree(item);
+	PPCODE:
+		ST(0)= tree && tree->owner? tree->owner : &PL_sv_undef;
+		XSRETURN(1);
+
 struct TreeRBXS_item *
 left(item)
 	struct TreeRBXS_item *item
@@ -1147,6 +1177,26 @@ right(item)
 	CODE:
 		RETVAL= rbtree_node_is_in_tree(&item->rbnode) && item->rbnode.right->count?
 			GET_TreeRBXS_item_FROM_rbnode(item->rbnode.right) : NULL;
+	OUTPUT:
+		RETVAL
+
+struct TreeRBXS_item *
+left_leaf(item)
+	struct TreeRBXS_item *item
+	INIT:
+		rbtree_node_t *node= rbtree_node_left_leaf(&item->rbnode);
+	CODE:
+		RETVAL= node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
+	OUTPUT:
+		RETVAL
+
+struct TreeRBXS_item *
+right_leaf(item)
+	struct TreeRBXS_item *item
+	INIT:
+		rbtree_node_t *node= rbtree_node_right_leaf(&item->rbnode);
+	CODE:
+		RETVAL= node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
 	OUTPUT:
 		RETVAL
 
