@@ -825,9 +825,8 @@ get(tree, key, mode_sv= NULL)
 	SV *mode_sv
 	ALIAS:
 		Tree::RB::XS::lookup = 0
-		Tree::RB::XS::lookup_node = 1
-		Tree::RB::XS::get = 2
-		Tree::RB::XS::get_node = 3
+		Tree::RB::XS::get = 1
+		Tree::RB::XS::get_node = 2
 	INIT:
 		struct TreeRBXS_item stack_item, *item;
 		rbtree_node_t *first, *last, *node= NULL;
@@ -841,17 +840,17 @@ get(tree, key, mode_sv= NULL)
 		// create a fake item to act as a search key
 		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
 		// In "full compatibility mode", 'get' is identical to 'lookup'
-		if (ix > 1 && tree->compat_list_context)
-			ix -= 2;
+		if (ix == 1 && tree->compat_list_context)
+			ix= 0;
 		// If this is a simple 'get = key' returning a value, call the simpler rbtree_find_nearest
-		if ((ix == 2 || GIMME_V == G_SCALAR) && mode == GET_EQ) {
+		if ((ix > 0 || GIMME_V == G_SCALAR) && mode == GET_EQ) {
 			node= rbtree_find_nearest(
 				&tree->root_sentinel,
 				&stack_item, // The item *is* the key that gets passed to the compare function
 				(int(*)(void*,void*,void*)) tree->compare,
 				tree, -OFS_TreeRBXS_item_FIELD_rbnode,
 				&cmp);
-			ST(0)= (ix == 1 || ix == 3)? sv_2mortal(TreeRBXS_wrap_item(GET_TreeRBXS_item_FROM_rbnode(node)))
+			ST(0)= (ix == 2)? sv_2mortal(TreeRBXS_wrap_item(GET_TreeRBXS_item_FROM_rbnode(node)))
 			     : (node && cmp == 0)? GET_TreeRBXS_item_FROM_rbnode(node)->value
 			     : &PL_sv_undef;
 			XSRETURN(1);
@@ -895,7 +894,7 @@ get(tree, key, mode_sv= NULL)
 		}
 		if (node) {
 			item= GET_TreeRBXS_item_FROM_rbnode(node);
-			if (ix == 1 || ix == 3) { /* lookup_node or get_node */
+			if (ix == 2) { /* get_node */
 				ST(0)= sv_2mortal(TreeRBXS_wrap_item(item));
 				XSRETURN(1);
 			}

@@ -262,7 +262,7 @@ Alias: C<nth>
 *max= *max_node;
 *nth= *nth_node;
 
-=head iter
+=head2 iter
 
   my $iter= $tree->iter;
                  ->iter($from_key);
