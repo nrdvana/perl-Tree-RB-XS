@@ -835,9 +835,15 @@ get(tree, key, mode_sv= NULL)
 	SV *key
 	SV *mode_sv
 	ALIAS:
-		Tree::RB::XS::lookup = 0
-		Tree::RB::XS::get = 1
-		Tree::RB::XS::get_node = 2
+		Tree::RB::XS::lookup           = 0
+		Tree::RB::XS::get              = 1
+		Tree::RB::XS::get_node         = 2
+		Tree::RB::XS::get_node_last    = 3
+		Tree::RB::XS::get_node_le      = 4
+		Tree::RB::XS::get_node_le_last = 5
+		Tree::RB::XS::get_node_lt      = 6
+		Tree::RB::XS::get_node_gt      = 7
+		Tree::RB::XS::get_node_ge      = 8
 	INIT:
 		struct TreeRBXS_item stack_item, *item;
 		rbtree_node_t *first, *last, *node= NULL;
@@ -845,28 +851,32 @@ get(tree, key, mode_sv= NULL)
 	PPCODE:
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
-		mode= mode_sv? parse_lookup_mode(mode_sv) : GET_EQ;
-		if (mode < 0)
-			croak("Invalid lookup mode %s", SvPV_nolen(mode_sv));
+		switch (ix) {
+		// In "full compatibility mode", 'get' is identical to 'lookup'
+		case 1:
+			if (tree->compat_list_get) {
+				ix= 0;
+		// In scalar context, lookup is identical to 'get'
+		case 0: if (GIMME_V == G_SCALAR) ix= 1;
+			}
+		case 2:
+			mode= mode_sv? parse_lookup_mode(mode_sv) : GET_EQ;
+			if (mode < 0)
+				croak("Invalid lookup mode %s", SvPV_nolen(mode_sv));
+			break;
+		case 3: mode= GET_EQ_LAST; if (0)
+		case 4: mode= GET_LE;      if (0)
+		case 5: mode= GET_LE_LAST; if (0)
+		case 6: mode= GET_LT;      if (0)
+		case 7: mode= GET_GT;      if (0)
+		case 8: mode= GET_GE;
+			if (mode_sv) croak("extra get-mode argument");
+			ix= 2;
+			break;
+		}
 		// create a fake item to act as a search key
 		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
-		// In "full compatibility mode", 'get' is identical to 'lookup'
-		if (ix == 1 && tree->compat_list_get)
-			ix= 0;
-		// If this is a simple 'get = key' returning a value, call the simpler rbtree_find_nearest
-		if ((ix > 0 || GIMME_V == G_SCALAR) && mode == GET_EQ) {
-			node= rbtree_find_nearest(
-				&tree->root_sentinel,
-				&stack_item, // The item *is* the key that gets passed to the compare function
-				(int(*)(void*,void*,void*)) tree->compare,
-				tree, -OFS_TreeRBXS_item_FIELD_rbnode,
-				&cmp);
-			ST(0)= (ix == 2)? sv_2mortal(TreeRBXS_wrap_item(GET_TreeRBXS_item_FROM_rbnode(node)))
-			     : (node && cmp == 0)? GET_TreeRBXS_item_FROM_rbnode(node)->value
-			     : &PL_sv_undef;
-			XSRETURN(1);
-		}
-		// Else need to ensure we find the *first* matching node for a key,
+		// Need to ensure we find the *first* matching node for a key,
 		// to deal with the case of duplicate keys.
 		if (rbtree_find_all(
 			&tree->root_sentinel,
@@ -905,20 +915,19 @@ get(tree, key, mode_sv= NULL)
 		}
 		if (node) {
 			item= GET_TreeRBXS_item_FROM_rbnode(node);
-			if (ix == 2) { /* get_node */
-				ST(0)= sv_2mortal(TreeRBXS_wrap_item(item));
-				XSRETURN(1);
-			}
-			else if (ix == 0 /* lookup */ && (GIMME_V == G_ARRAY)) {
+			if (ix == 0) { // lookup in list context
 				ST(0)= item->value;
 				ST(1)= sv_2mortal(TreeRBXS_wrap_item(item));
 				XSRETURN(2);
-			} else { // get, or lookup in scalar context
+			} else if (ix == 1) { // get, or lookup in scalar context
 				ST(0)= item->value;
+				XSRETURN(1);
+			} else { // get_node
+				ST(0)= sv_2mortal(TreeRBXS_wrap_item(item));
 				XSRETURN(1);
 			}
 		} else {
-			if (ix == 0 /* lookup */ && (GIMME_V == G_ARRAY)) {
+			if (ix == 0) { // lookup in list context
 				XSRETURN(0);
 			}
 			else {

@@ -40,7 +40,7 @@ trusting it with production data.
   # optimize for floating-point comparisons
   $tree= Tree::RB::XS->new(key_type => 'float', allow_duplicates => 1);
   $tree->put(rand() => 1);
-  $tree->delete(0, $tree->get(.5, GET_LT));
+  $tree->delete(0, $tree->get_node_lt(.5));
 
   # optimize for byte strings
   $tree= Tree::RB::XS->new(key_type => KEY_TYPE_BSTR);
@@ -232,55 +232,35 @@ Alias: C<nth>
                 ->get($key, $mode);
 
 Fetch a value from the tree, by its key.  Unlike L<Tree::RB/get>, this always
-returns a single value, regardless of list context.
+returns a single value, regardless of list context.  But, you can set
+L<compat_list_get> to make C<get> an alias for C<lookup>.
 
 Mode can be used to indicate something other than an exact match:
-L</GET_EQ>, L</GET_LE>, L</GET_LT>, L</GET_GE>, L</GET_GT>.
-
-Aliases with built-in mode constants:
-
-=over
-
-=item *
-
-C<get_last>
-
-=item *
-
-C<get_le>
-
-=item *
-
-C<get_le_last>
-
-=item *
-
-C<get_lt>
-
-=item *
-
-C<get_ge>
-
-=item *
-
-C<get_gt>
-
-=back
-
-=cut
-
-sub get_last    { $_[0]->get($_[1], GET_EQ_LAST()) }
-sub get_le      { $_[0]->get($_[1], GET_LE()) }
-sub get_le_last { $_[0]->get($_[1], GET_LE_LAST()) }
-sub get_lt      { $_[0]->get($_[1], GET_LT()) }
-sub get_gt      { $_[0]->get($_[1], GET_GT()) }
-sub get_ge      { $_[0]->get($_[1], GET_GE()) }
+L</GET_EQ>, L</GET_EQ_LAST>, L</GET_LE>, L</GET_LE_LAST>, L</GET_LT>, L</GET_GE>, L</GET_GT>.
 
 =head2 get_node
 
 Same as L</get>, but returns the node instead of the value.  In trees with
 duplicate keys, this always returns the first node.  (nodes with identical keys
 are preserved in the order they were added)
+
+Aliases with built-in mode constants:
+
+=over 20
+
+=item get_node_last
+
+=item get_node_le
+
+=item get_node_le_last
+
+=item get_node_lt
+
+=item get_node_ge
+
+=item get_node_gt
+
+=back
 
 =head2 get_all
 
