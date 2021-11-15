@@ -120,7 +120,9 @@ static const char * get_cmp_name(int cmp_id) {
 #define GET_LT   4
 #define GET_NEXT 5
 #define GET_PREV 6
-#define GET_MAX  6
+#define GET_EQ_LAST 7
+#define GET_LE_LAST 8
+#define GET_MAX  8
 
 static int parse_lookup_mode(SV *mode_sv) {
 	int mode;
@@ -146,7 +148,10 @@ static int parse_lookup_mode(SV *mode_sv) {
 		case '-': mode= len == 2 && mode_str[1] == '-'? GET_PREV : -1; break;
 		case '+': mode= len == 2 && mode_str[1] == '+'? GET_NEXT : -1; break;
 		case 'E': case 'e':
-		          mode= len == 2 && (mode_str[1] == 'q' || mode_str[1] == 'Q')? GET_EQ : -1; break;
+		          mode= len == 2 && (mode_str[1] == 'q' || mode_str[1] == 'Q')? GET_EQ
+		              : len == 7 && foldEQ(mode_str, "EQ_LAST", 7)? GET_EQ_LAST
+		              : -1;
+		          break;
 		case 'G': case 'g':
 		          mode= len == 2 && (mode_str[1] == 't' || mode_str[1] == 'T')? GET_GT
                       : len == 2 && (mode_str[1] == 'e' || mode_str[1] == 'E')? GET_GE
@@ -155,6 +160,7 @@ static int parse_lookup_mode(SV *mode_sv) {
 		case 'L': case 'l':
 		          mode= len == 2 && (mode_str[1] == 't' || mode_str[1] == 'T')? GET_LT
                       : len == 2 && (mode_str[1] == 'e' || mode_str[1] == 'E')? GET_LE
+		              : len == 7 && foldEQ(mode_str, "LE_LAST", 7)? GET_LE_LAST
 		              : -1;
 		          break;
 		case 'P': case 'p': mode= foldEQ(mode_str, "PREV", 4)? GET_PREV : -1; break;
@@ -864,6 +870,8 @@ get(tree, key, mode_sv= NULL)
 			case GET_EQ:
 			case GET_GE:
 			case GET_LE: node= first; break;
+			case GET_EQ_LAST:
+			case GET_LE_LAST: node= last; break;
 			case GET_LT:
 			case GET_PREV: node= rbtree_node_prev(first); break;
 			case GET_GT:
@@ -873,10 +881,12 @@ get(tree, key, mode_sv= NULL)
 		} else {
 			// Didn't find an exact match.  First and last are the bounds of what would have matched.
 			switch (mode) {
-			case GET_EQ: node= NULL; break;
+			case GET_EQ:
+			case GET_EQ_LAST: node= NULL; break;
 			case GET_GE:
 			case GET_GT: node= last; break;
 			case GET_LE:
+			case GET_LE_LAST:
 			case GET_LT: node= first; break;
 			case GET_PREV:
 			case GET_NEXT: node= NULL; break;
@@ -1187,8 +1197,10 @@ BOOT:
 	EXPORT_ENUM(CMP_UTF8);
 	EXPORT_ENUM(CMP_MEMCMP);
 	EXPORT_ENUM(GET_EQ);
+	EXPORT_ENUM(GET_EQ_LAST);
 	EXPORT_ENUM(GET_GE);
 	EXPORT_ENUM(GET_LE);
+	EXPORT_ENUM(GET_LE_LAST);
 	EXPORT_ENUM(GET_GT);
 	EXPORT_ENUM(GET_LT);
 	EXPORT_ENUM(GET_NEXT);

@@ -11,7 +11,7 @@ XSLoader::load('Tree::RB::XS', $Tree::RB::XS::VERSION);
 use Exporter 'import';
 our @_key_types= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_BSTR KEY_TYPE_USTR );
 our @_cmp_enum= qw( CMP_PERL CMP_INT CMP_FLOAT CMP_MEMCMP CMP_UTF8 );
-our @_lookup_modes= qw( GET_EQ GET_GT GET_LT GET_GE GET_LE GET_NEXT GET_PREV
+our @_lookup_modes= qw( GET_EQ GET_EQ_LAST GET_GT GET_LT GET_GE GET_LE GET_LE_LAST GET_NEXT GET_PREV
                         LUEQUAL LUGTEQ LULTEQ LUGREAT LULESS LUNEXT LUPREV );
 our @EXPORT_OK= (@_key_types, @_cmp_enum, @_lookup_modes);
 our %EXPORT_TAGS= (
@@ -262,6 +262,39 @@ Alias: C<nth>
 *max= *max_node;
 *nth= *nth_node;
 
+=head iter
+
+  my $iter= $tree->iter;
+                 ->iter($from_key);
+  while (my $node= $iter->()) { ... }
+  while (my $node= $iter->next) { ... }
+
+Return an iterator object that traverses the tree.  The iterator is a blesed coderef, so you
+can either call it as a fuction or call the C<< ->next >> method.  If the C<$from_key> is
+provided, this starts from C<< $tree->get($key, GET_GE) >>.
+
+=head2 rev_iter
+
+Like C<iter>, but the C<< ->next >> method walks backward to smaller key values, and if the
+initial value is provided and duplicate keys are enabled, this starts on the right-most match
+of the key instead of the left-most match.
+
+=cut
+
+sub iter {
+	my $self= shift;
+	my $node= @_? $self->get_node($_[0], GET_GE()) : $self->min;
+	bless sub { my $x= $node; $node= $node->next if $node; $x }, 'Tree::RB::XS::Iter';
+}
+
+sub rev_iter {
+	my $self= shift;
+	my $node= @_? $self->get_node($_[0], GET_LE_LAST()) : $self->max;
+	bless sub { my $x= $node; $node= $node->prev if $node; $x }, 'Tree::RB::XS::Iter';
+}
+
+sub Tree::RB::XS::Iter::next { shift->() }
+
 =head1 NODE OBJECTS
 
 The nodes returned by the methods above have the following attributes:
@@ -387,27 +420,37 @@ Compare the keys using C's C<memcmp> function.
 
 =head2 Lookup Mode
 
-Export all with ':lookup'
+Export all with ':get'
 
 =over
 
 =item GET_EQ
 
-Return an exact match.  If duplicate keys are present, this returns the
-first (leftmost) of the matching nodes.
+This specifies a node with a key equal to the search key.  If duplicate keys are enabled,
+this specifies the left-most match (least recently added).
 Has alias C<LUEQUAL> to match Tree::RB.
+
+=item GET_EQ_LAST
+
+Same as C<GET_EQ>, but if duplicate keys are enabled, this specifies the right-most match
+(most recently inserted).
 
 =item GET_GE
 
-Return the first exact match, or the first node greater than the key,
-or C<undef> if the key is greater than any node.
+This specifies the same node of C<GET_EQ>, unless there are no matches, then it falls back
+to the left-most node with a key greater than the search key.
 Has alias C<LUGTEQ> to match Tree:RB.
 
 =item GET_LE
 
-Return the first exact match, or the last node less than the key,
-Return the key is less than any node.
+This specifies the same node of C<GET_EQ>, unless there are no matches, then it falls back
+to the right-most node with a key less than the search key.
 Has alias C<LULTEQ> to match Tree::RB.
+
+=item GET_LE_LAST
+
+This specifies the same node of C<GET_EQ_LAST>, unless there are no matches, then it falls
+back to the right-most node with a key less than the search key.
 
 =item GET_GT
 
@@ -417,8 +460,8 @@ Has alias C<LUGREAT> to match Tree::RB.
 
 =item GET_LT
 
-Return the last node less than the key,
-Return the key is less than any node.
+Return the right-most node less than the key,
+or C<undef> if the key is less than any node.
 Has alias C<LULESS> to match Tree::RB.
 
 =item GET_NEXT
