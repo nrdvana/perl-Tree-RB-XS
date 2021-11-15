@@ -187,7 +187,7 @@ struct TreeRBXS {
 	int key_type;                  // must always be set and never changed
 	int compare_fn_id;             // indicates which compare is in use, for debugging
 	bool allow_duplicates;         // flag to affect behavior of insert.  may be changed.
-	bool compat_list_context;      // flag to enable full compat with Tree::RB's list context behavior
+	bool compat_list_get;          // flag to enable full compat with Tree::RB's list context behavior
 	rbtree_node_t root_sentinel;   // parent-of-root, used by rbtree implementation.
 	rbtree_node_t leaf_sentinel;   // dummy node used by rbtree implementation.
 };
@@ -717,15 +717,15 @@ allow_duplicates(tree, allow= NULL)
 		XSRETURN(1);
 
 void
-compat_list_context(tree, allow= NULL)
+compat_list_get(tree, allow= NULL)
 	struct TreeRBXS *tree
 	SV* allow
 	PPCODE:
 		if (items > 1) {
-			tree->compat_list_context= SvTRUE(allow);
+			tree->compat_list_get= SvTRUE(allow);
 			// ST(0) is $self, so let it be the return value
 		} else {
-			ST(0)= sv_2mortal(newSViv(tree->compat_list_context? 1 : 0));
+			ST(0)= sv_2mortal(newSViv(tree->compat_list_get? 1 : 0));
 		}
 		XSRETURN(1);
 
@@ -851,7 +851,7 @@ get(tree, key, mode_sv= NULL)
 		// create a fake item to act as a search key
 		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
 		// In "full compatibility mode", 'get' is identical to 'lookup'
-		if (ix == 1 && tree->compat_list_context)
+		if (ix == 1 && tree->compat_list_get)
 			ix= 0;
 		// If this is a simple 'get = key' returning a value, call the simpler rbtree_find_nearest
 		if ((ix > 0 || GIMME_V == G_SCALAR) && mode == GET_EQ) {

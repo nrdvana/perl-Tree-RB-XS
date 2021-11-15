@@ -115,7 +115,7 @@ Avoid using a coderef if possible.
 
 Whether to allow two nodes with the same key.  Defaults to false.
 
-=item L</compat_list_context>
+=item L</compat_list_get>
 
 Whether to enable full compatibility with L<Tree::RB>'s list-context behaviors.
 Defaults to false.
@@ -130,7 +130,7 @@ sub new {
 	my $self= bless \%options, $class;
 	$self->_init_tree(delete $self->{key_type}, delete $self->{compare_fn});
 	$self->allow_duplicates(1) if delete $self->{allow_duplicates};
-	$self->compat_list_context(1) if delete $self->{compat_list_context};
+	$self->compat_list_get(1) if delete $self->{compat_list_get};
 	$self;
 }
 
@@ -180,7 +180,7 @@ keys that already exist in the tree.  This does not change the behavior of L</pu
 only L</insert>.  If you set this to false, it does not remove duplicates that
 already existed.  The initial value is false.
 
-=head2 compat_list_context
+=head2 compat_list_get
 
 Boolean, read/write.  Controls whether C</get> returns multiple values in list context.
 I wanted to match the API of L<Tree::RB>, but I can't bring myself to make an innocent-named
