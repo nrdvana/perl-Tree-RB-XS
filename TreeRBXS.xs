@@ -1074,7 +1074,7 @@ nth_node(tree, ofs)
 		RETVAL
 
 struct TreeRBXS_item *
-root(tree)
+root_node(tree)
 	struct TreeRBXS *tree
 	CODE:
 		RETVAL= !tree->root_sentinel.left->count? NULL

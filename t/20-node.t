@@ -82,8 +82,6 @@ subtest node_ownership => sub {
 	$tree->put("test1", canary->new("test1"));
 	$tree->put("test2", canary->new("test2"));
 	my $test1= $tree->root;
-	$test1->prune;
-	is( \@canary::dead, [], 'prune does not free anything' );
 	undef $tree;
 	is( \@canary::dead, ['test2'], 'free tree frees the remaining node' );
 	like( $test1, object {

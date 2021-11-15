@@ -117,7 +117,7 @@ Whether to allow two nodes with the same key.  Defaults to false.
 
 =item L</compat_list_get>
 
-Whether to enable full compatibility with L<Tree::RB>'s list-context behaviors.
+Whether to enable full compatibility with L<Tree::RB>'s list-context behavior for L</get>.
 Defaults to false.
 
 =back
@@ -182,15 +182,47 @@ already existed.  The initial value is false.
 
 =head2 compat_list_get
 
-Boolean, read/write.  Controls whether C</get> returns multiple values in list context.
-I wanted to match the API of L<Tree::RB>, but I can't bring myself to make an innocent-named
+Boolean, read/write.  Controls whether L</get> returns multiple values in list context.
+I wanted to match the API of C<Tree::RB>, but I can't bring myself to make an innocent-named
 method like 'get' change its behavior in list context.  So, by deault, this attribute is
-false and 'get' always returns a scalar.  But if you set this to true, C<get> changes in
-list context to also return the Node, like is done in C<Tree::RB>.
+false and C<get> always returns one value.  But if you set this to true, C<get> changes in
+list context to also return the Node, like is done in L<Tree::RB/lookup>.
 
 =head2 size
 
 Returns the number of elements in the tree.
+
+=head2 root_node
+
+Get the root node of the tree, or C<undef> if the tree is empty.
+
+Alias: C<root>
+
+=head2 min_node
+
+Get the tree node with minimum key.  Returns undef if the tree is empty.
+
+Alias: C<min>
+
+=head2 max_node
+
+Get the tree node with maximum key.  Returns undef if the tree is empty.
+
+Alias: C<max>
+
+=head2 nth_node
+
+Get the Nth node in the sequence from min to max.  N is a zero-based index.
+You may use negative numbers to count down form max.
+
+Alias: C<nth>
+
+=cut
+
+*root= *root_node;
+*min= *min_node;
+*max= *max_node;
+*nth= *nth_node;
 
 =head1 METHODS
 
@@ -204,6 +236,45 @@ returns a single value, regardless of list context.
 
 Mode can be used to indicate something other than an exact match:
 L</GET_EQ>, L</GET_LE>, L</GET_LT>, L</GET_GE>, L</GET_GT>.
+
+Aliases with built-in mode constants:
+
+=over
+
+=item *
+
+C<get_last>
+
+=item *
+
+C<get_le>
+
+=item *
+
+C<get_le_last>
+
+=item *
+
+C<get_lt>
+
+=item *
+
+C<get_ge>
+
+=item *
+
+C<get_gt>
+
+=back
+
+=cut
+
+sub get_last    { $_[0]->get($_[1], GET_EQ_LAST()) }
+sub get_le      { $_[0]->get($_[1], GET_LE()) }
+sub get_le_last { $_[0]->get($_[1], GET_LE_LAST()) }
+sub get_lt      { $_[0]->get($_[1], GET_LT()) }
+sub get_gt      { $_[0]->get($_[1], GET_GT()) }
+sub get_ge      { $_[0]->get($_[1], GET_GE()) }
 
 =head2 get_node
 
@@ -259,35 +330,6 @@ The keys (or nodes) most be given in ascending order, else no nodes are deleted.
 If you want to delete a range *exclusive* of one or both ends of the range, just
 use the C</get> method with the desired mode to look up each end of the nodes that
 you do want removed.
-
-=head2 min_node
-
-Get the tree node with minimum key.  Returns undef if the tree is empty.
-
-Alias: C<min>
-
-=head2 max_node
-
-Get the tree node with maximum key.  Returns undef if the tree is empty.
-
-Alias: C<max>
-
-=head2 nth_node
-
-Get the Nth node in the sequence from min to max.  N is a zero-based index.
-You may use negative numbers to count down form max.
-
-Alias: C<nth>
-
-=head2 root
-
-Get the root node of the tree, or C<undef> if the tree is empty.
-
-=cut
-
-*min= *min_node;
-*max= *max_node;
-*nth= *nth_node;
 
 =head2 iter
 
