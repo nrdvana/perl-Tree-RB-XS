@@ -214,7 +214,7 @@ struct TreeRBXS_item {
 		const char *ckey;
 		SV *svkey;
 	} keyunion;
-	struct TreeRBXS_iter *iter; // linked list of iterators pointing to this node
+	struct TreeRBXS_iter *iter; // linked list of iterators who reference this item
 	SV *value;            // value will be set unless struct is just used as a search key
 	size_t key_type: 4,
 #if SIZE_MAX == 0xFFFFFFFF
@@ -228,6 +228,7 @@ struct TreeRBXS_item {
 };
 
 struct TreeRBXS_iter {
+	struct TreeRBXS *tree;
 	SV *owner;
 	struct TreeRBXS_iter *next_iter;
 	struct TreeRBXS_item *item;
@@ -393,12 +394,46 @@ static void TreeRBXS_item_detach_iter(struct TreeRBXS_item *item, struct TreeRBX
 	iter->next_iter= NULL;
 }
 
-static void TreeRBXS_iter_advance(struct TreeRBXS_iter *iter) {
+static void TreeRBXS_iter_advance(struct TreeRBXS_iter *iter, IV ofs) {
 	rbtree_node_t *node;
-	if (iter->item) {
-		node= &iter->item->rbnode;
-		node= iter->reverse? rbtree_node_prev(node) : rbtree_node_next(node);
-		TreeRBXS_item_detach_iter(iter->item, iter);
+	size_t pos, newpos, cnt;
+
+	if (!iter->tree)
+		croak("BUG: iterator lost tree");
+	// Most common case
+	if (ofs == 1) {
+		if (iter->item) {
+			node= &iter->item->rbnode;
+			node= iter->reverse? rbtree_node_prev(node) : rbtree_node_next(node);
+			TreeRBXS_item_detach_iter(iter->item, iter);
+			if (node)
+				TreeRBXS_item_attach_iter(GET_TreeRBXS_item_FROM_rbnode(node), iter);
+		}
+		// nothing to do at end of iteration
+	}
+	else {
+		// More advanced case falls back to by-index, since the log(n) of indexes is likely
+		// about the same as a few hops forward or backward, and because reversing from EOF
+		// means there isn't a current node to step from anyway.
+		cnt= iter->tree->root_sentinel.left->count;
+		// rbtree measures index in size_t, but this function applies a signed offset to it
+		// of possibly a different word length.  Also, clamp overflows to the ends of the
+		// range of nodes and don't wrap.
+		pos= !iter->item? cnt
+			: !iter->reverse? rbtree_node_index(&iter->item->rbnode)
+			// For reverse iterators, swap the scale so that math goes upward
+			: cnt - 1 - rbtree_node_index(&iter->item->rbnode);
+		if (ofs > 0) {
+			newpos= (UV)ofs < (cnt-pos)? pos + ofs : cnt;
+		} else {
+			ofs= -ofs;
+			newpos= (pos < ofs)? 0 : pos - ofs;
+		}
+		// swap back for reverse iterators
+		if (iter->reverse) newpos= cnt - 1 - newpos;
+		node= rbtree_node_child_at_index(iter->tree->root_sentinel.left, (size_t)newpos);
+		if (iter->item)
+			TreeRBXS_item_detach_iter(iter->item, iter);
 		if (node)
 			TreeRBXS_item_attach_iter(GET_TreeRBXS_item_FROM_rbnode(node), iter);
 	}
@@ -480,6 +515,8 @@ static void TreeRBXS_destroy(struct TreeRBXS *tree) {
 static void TreeRBXS_iter_free(struct TreeRBXS_iter *iter) {
 	if (iter->item)
 		TreeRBXS_item_detach_iter(iter->item, iter);
+	if (iter->tree)
+		SvREFCNT_dec(iter->tree->owner);
 	Safefree(iter);
 }
 
@@ -727,6 +764,7 @@ static struct TreeRBXS* TreeRBXS_get_magic_tree(SV *obj, int flags) {
         magic->mg_flags |= MGf_DUP;
 #endif
 		rbtree_init_tree(&tree->root_sentinel, &tree->leaf_sentinel);
+		tree->owner= sv;
         return tree;
     }
     else if (flags & OR_DIE)
@@ -899,7 +937,7 @@ _init_tree(obj, key_type_sv, compare_fn)
 		}
 		
 		tree= TreeRBXS_get_magic_tree(obj, AUTOCREATE|OR_DIE);
-		if (tree->owner)
+		if (tree->owner != SvRV(obj))
 			croak("Tree is already initialized");
 		
 		tree->owner= SvRV(obj);
@@ -1399,8 +1437,12 @@ _init_iter(tree, iter_sv, direction, item_sv=NULL)
 		struct TreeRBXS_item *item= item_sv && SvOK(item_sv)? TreeRBXS_get_magic_item(item_sv, OR_DIE) : NULL;
 		rbtree_node_t *node;
 	PPCODE:
-		if (iter->item)
+		if (iter->item || iter->tree)
 			croak("Iterator is already initialized");
+		iter->tree= tree;
+		iter->reverse= direction == 1? 0 : 1;
+		if (tree->owner)
+			SvREFCNT_inc(tree->owner);
 		if (!item) {
 			if (tree->root_sentinel.left->count == 0)
 				node= NULL;
@@ -1410,7 +1452,8 @@ _init_iter(tree, iter_sv, direction, item_sv=NULL)
 				node= rbtree_node_right_leaf(tree->root_sentinel.left);
 			else
 				croak("Unhandled 'direction' %d", direction);
-			if (node) item= GET_TreeRBXS_item_FROM_rbnode(node);
+			if (node)
+				item= GET_TreeRBXS_item_FROM_rbnode(node);
 		}
 		if (item)
 			TreeRBXS_item_attach_iter(item, iter);
@@ -1485,7 +1528,7 @@ tree(item)
 	INIT:
 		struct TreeRBXS *tree= TreeRBXS_item_get_tree(item);
 	PPCODE:
-		ST(0)= tree && tree->owner? tree->owner : &PL_sv_undef;
+		ST(0)= tree && tree->owner? sv_2mortal(newRV_inc(tree->owner)) : &PL_sv_undef;
 		XSRETURN(1);
 
 struct TreeRBXS_item *
@@ -1588,6 +1631,22 @@ index(iter)
 	OUTPUT:
 		RETVAL
 
+SV *
+tree(iter)
+	struct TreeRBXS_iter *iter
+	CODE:
+		RETVAL= iter->tree && iter->tree->owner? newRV_inc(iter->tree->owner) : &PL_sv_undef;
+	OUTPUT:
+		RETVAL
+
+bool
+done(iter)
+	struct TreeRBXS_iter *iter
+	CODE:
+		RETVAL= !iter->item;
+	OUTPUT:
+		RETVAL
+
 void
 next(iter)
 	struct TreeRBXS_iter *iter
@@ -1595,7 +1654,7 @@ next(iter)
 		struct TreeRBXS_item *cur= iter->item;
 	PPCODE:
 		if (cur)
-			TreeRBXS_iter_advance(iter);
+			TreeRBXS_iter_advance(iter, 1);
 		// Avoid creating a Node object in void context
 		if (GIMME_V == G_VOID)
 			XSRETURN(0);
@@ -1604,6 +1663,17 @@ next(iter)
 			XSRETURN(1);
 		}
 
+bool
+step(iter, ofs= 1)
+	struct TreeRBXS_iter *iter
+	IV ofs
+	CODE:
+		TreeRBXS_iter_advance(iter, ofs);
+		// Return boolean whether the iterator points to an item
+		RETVAL= !!iter->item;
+	OUTPUT:
+		RETVAL
+		
 #-----------------------------------------------------------------------------
 #  Constants
 #

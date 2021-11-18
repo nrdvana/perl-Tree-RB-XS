@@ -319,22 +319,26 @@ If you want to delete a range *exclusive* of one or both ends of the range, just
 use the C</get_node> method with the desired mode to look up each end of the nodes
 that you do want removed.
 
+=head2 clear
+
+  my $count= $tree->clear();
+
+This is the fastest way to remove all nodes from the tree.  It gets to destroy all
+the nodes without worrying about the tree structure or shifting iterators aside.
+
 =head2 iter
 
-  my $iter= $tree->iter;
-              ...->iter($from_key);
-  while (my $node= $iter->()) { ... }
-  while (my $node= $iter->next) { ... }
+  my $iter= $tree->iter;                              # from min_node
+              ...->iter($from_key, $get_mode=GET_GE); # from get_node
+              ...->iter($from_node);                  # from existing node
 
-Return an iterator object that traverses the tree.  The iterator is a blesed coderef, so you
-can either call it as a fuction or call the C<< ->next >> method.  If the C<$from_key> is
-provided, this starts from C<< $tree->get_node($key, GET_GE) >>.
+Return an L<iterator object|ITERATOR OBJECTS> that traverses the tree from min to max,
+or from the key or node you provide up to max.
 
 =head2 rev_iter
 
-Like C<iter>, but the C<< ->next >> method walks backward to smaller key values, and if the
-initial value is provided and duplicate keys are enabled, this starts on the right-most match
-of the key instead of the left-most match.
+Like C<iter>, but the C<< ->next >> and C<< ->step >> methods walk backward to smaller key
+values, and the default C<$get_mode> is L</GET_GE_LAST>.
 
 =cut
 
@@ -461,6 +465,14 @@ For compat with L<Tree::RB::Node/strip>.
 Return sub-tree as list-of-lists. (array of arrays rather?)
 For compat with L<Tree::RB::Node/as_lol>.
 
+=item iter
+
+Shortcut for C<< $node->tree->iter($node) >>.
+
+=item rev_iter
+
+Shortcut for C<< $node->tree->rev_iter($node) >>.
+
 =back
 
 =cut
@@ -496,6 +508,70 @@ sub Tree::RB::XS::Node::rev_iter {
 	my $tree= $_[0]->tree or croak("Node is not in a tree");
 	$tree->_new_iter(-1, $_[0]);
 }
+
+=head1 ITERATOR OBJECTS
+
+Iterators are similar to Nodes, but they hold a strong reference to the tree, and if a node
+they point to is removed from the tree they advance to the next node.  (and obviously they
+iterate and node objects do not)
+
+The iterator references a "current node" which you can inspect the key and value of.  You
+can call 'step' to move to a new current node, and you can call 'next' which returns the
+current node while switching the reference to the next node.
+
+Note that if you avoid referencing the Node, and stick to the attributes and methods of the
+iterator, the tree can avoid allocating the Perl object to represent the Node.  This gives a
+bit of a performance boost for large tree operations.
+
+=head2 ITERATOR ATTRIBUTES
+
+=over 10
+
+=item key
+
+The key of the current node.
+
+=item value
+
+The value of the current node.
+
+=item index
+
+The index of the current node.
+
+=item tree
+
+A reference back to the Tree.  Note that each iterator holds a strong reference to the tree.
+
+=item done
+
+True if the iterator has reached the end of its sequence, and no longer references a
+current Node.
+
+=back
+
+=head2 ITERATOR METHODS
+
+=over 10
+
+=item next
+
+Return the current node (as a L<node object|/NODE OBJECTS>) and advance to the following node
+in the sequence.  After the end of the sequence, calls to C<next> return C<undef>.
+
+=item step
+
+    $iter->step;     # advance by one node
+	$iter->step(10); # advance by 10 nodes
+	$iter->step(-4); # back up 4 nodes
+
+This moves the iterator by one or more nodes in the forward or backward direction.
+For a reverse-iterator, positive numbers move toward the minimum key and negative numbers
+move toward the maximum key.  If the offset would take the iterator beyond the last node,
+the current node becomes C<undef>.  If the offset would take the iterator beyond the first
+node, the first node becomes the current node.
+
+=back
 
 =head1 EXPORTS
 
