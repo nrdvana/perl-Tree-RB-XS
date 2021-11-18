@@ -1,6 +1,7 @@
 TYPEMAP
 struct TreeRBXS*        O_TreeRBXS
 struct TreeRBXS_item*   O_TreeRBXS_item
+struct TreeRBXS_iter*   O_TreeRBXS_iter
 
 INPUT
 O_TreeRBXS
@@ -13,3 +14,11 @@ O_TreeRBXS_item
 OUTPUT
 O_TreeRBXS_item
 	$arg= TreeRBXS_wrap_item($var);
+
+INPUT
+O_TreeRBXS_iter
+	$var= TreeRBXS_get_magic_iter($arg, OR_DIE);
+
+#OUTPUT
+#O_TreeRBXS_iter
+#	$arg= TreeRBXS_wrap_iter(aTHX_ $var);

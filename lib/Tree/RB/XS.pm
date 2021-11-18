@@ -338,19 +338,42 @@ of the key instead of the left-most match.
 
 =cut
 
+# I can't figure out how to do this in XS yet
+sub _new_iter {
+	my ($tree, $direction, $node)= @_;
+	my ($x,$y);
+	$x= bless sub { Tree::XS::RB::Iter::next($y) }, 'Tree::RB::XS::Iter';
+	Scalar::Util::weaken($y= $x);
+	$tree->_init_iter($x, $direction, $node);
+}
+
 sub iter {
-	my $self= shift;
-	my $node= @_? $self->get_node($_[0], GET_GE()) : $self->min;
-	bless sub { my $x= $node; $node= $node->next if $node; $x }, 'Tree::RB::XS::Iter';
+	my ($self, $key_or_node, $mode)= @_;
+	$key_or_node= $self->get_node($key_or_node, @_ > 2? $mode : GET_GE())
+		if @_ > 1 && ref $key_or_node ne 'Tree::RB::XS::Node';
+	return $self->_new_iter(1, $key_or_node);
 }
 
 sub rev_iter {
-	my $self= shift;
-	my $node= @_? $self->get_node($_[0], GET_LE_LAST()) : $self->max;
-	bless sub { my $x= $node; $node= $node->prev if $node; $x }, 'Tree::RB::XS::Iter';
+	my ($self, $key_or_node, $mode)= @_;
+	$key_or_node= $self->get_node($key_or_node, @_ > 2? $mode : GET_LE_LAST())
+		if @_ > 1 && ref $key_or_node ne 'Tree::RB::XS::Node';
+	return $self->_new_iter(-1, $key_or_node);
 }
 
-sub Tree::RB::XS::Iter::next { shift->() }
+=head1 TIE HASH INTERFACE
+
+This class implements the methods needed to be tied to a hash:
+
+  my %hash
+  my $tree= tie %hash, 'Class::RB::XS';
+  $hash{$_}= $_ for 1..10;
+
+=cut
+
+*TIEHASH= *new;
+*STORE= *put;
+*CLEAR= *clear;
 
 =head1 NODE OBJECTS
 
@@ -462,6 +485,16 @@ sub Tree::RB::XS::Node::as_lol {
 		$self->right? $self->right->as_lol : '*',
 		($self->color? 'R':'B').':'.($self->key||'')
 	]
+}
+
+sub Tree::RB::XS::Node::iter {
+	my $tree= $_[0]->tree or croak("Node is not in a tree");
+	$tree->_new_iter(1, $_[0]);
+}
+
+sub Tree::RB::XS::Node::rev_iter {
+	my $tree= $_[0]->tree or croak("Node is not in a tree");
+	$tree->_new_iter(-1, $_[0]);
 }
 
 =head1 EXPORTS
