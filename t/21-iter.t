@@ -148,4 +148,23 @@ subtest iterate_chaos_with_deletions => sub {
 	is( $tref, undef, 'tree freed' );
 };
 
+subtest iter_get_multi => sub {
+	my $tree= Tree::RB::XS->new(key_type => 'int');
+	weaken(my $tref= $tree);
+	$tree->put($_ => $_*2) for 0..20;
+	is( [ $tree->nth(15)->iter->next_keys('*') ], [ 15, 16, 17, 18, 19, 20 ], 'next_keys(*)' );
+	is( [ $tree->nth(20)->iter->next_keys(10) ], [ 20 ], 'next_keys overshoot' );
+	is( [ $tree->rev_iter(4)->next_keys(50) ], [ 4, 3, 2, 1, 0 ], 'reverse next_keys overshoot' );
+	is( [ $tree->rev_iter(1)->next_keys(1) ], [ 1 ], 'reverse next_keys for 1' );
+	is( [ $tree->iter->next_keys(0) ], [], 'iterate nothing' );
+	is( [ $tree->iter->next_values(4) ], [ 0, 2, 4, 6 ], 'next_values(4)' );
+	is( [ $tree->iter->next_nodes(2) ], [
+		object{ call key => 0; call value => 0; etc; },
+		object{ call key => 1; call value => 2; etc; },
+	], 'next_nodes(2)' );
+	is( [ $tree->iter(1)->next_kv(2) ], [ 1, 2, 2, 4 ], 'next_kv' );
+	undef $tree;
+	is( $tref, undef, 'tree freed' );
+};
+
 done_testing;

@@ -520,6 +520,50 @@ static void TreeRBXS_iter_free(struct TreeRBXS_iter *iter) {
 	Safefree(iter);
 }
 
+static struct TreeRBXS_item *TreeRBXS_find_item(struct TreeRBXS *tree, struct TreeRBXS_item *key, int mode) {
+	rbtree_node_t *first, *last;
+	rbtree_node_t *node= NULL;
+
+	// Need to ensure we find the *first* matching node for a key,
+	// to deal with the case of duplicate keys.
+	if (rbtree_find_all(
+		&tree->root_sentinel,
+		key,
+		(int(*)(void*,void*,void*)) tree->compare,
+		tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+		&first, &last, NULL)
+	) {
+		// Found an exact match.  First and last are the range of nodes matching.
+		switch (mode) {
+		case GET_EQ:
+		case GET_GE:
+		case GET_LE: node= first; break;
+		case GET_EQ_LAST:
+		case GET_LE_LAST: node= last; break;
+		case GET_LT:
+		case GET_PREV: node= rbtree_node_prev(first); break;
+		case GET_GT:
+		case GET_NEXT: node= rbtree_node_next(last); break;
+		default: croak("BUG: unhandled mode");
+		}
+	} else {
+		// Didn't find an exact match.  First and last are the bounds of what would have matched.
+		switch (mode) {
+		case GET_EQ:
+		case GET_EQ_LAST: node= NULL; break;
+		case GET_GE:
+		case GET_GT: node= last; break;
+		case GET_LE:
+		case GET_LE_LAST:
+		case GET_LT: node= first; break;
+		case GET_PREV:
+		case GET_NEXT: node= NULL; break;
+		default: croak("BUG: unhandled mode");
+		}
+	}
+	return node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
+}
+
 /*----------------------------------------------------------------------------
  * Comparison Functions.
  * These conform to the rbtree_compare_fn signature of a context followed by
@@ -1201,45 +1245,8 @@ get(tree, key, mode_sv= NULL)
 		}
 		// create a fake item to act as a search key
 		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
-		// Need to ensure we find the *first* matching node for a key,
-		// to deal with the case of duplicate keys.
-		if (rbtree_find_all(
-			&tree->root_sentinel,
-			&stack_item,
-			(int(*)(void*,void*,void*)) tree->compare,
-			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
-			&first, &last, NULL)
-		) {
-			// Found an exact match.  First and last are the range of nodes matching.
-			switch (mode) {
-			case GET_EQ:
-			case GET_GE:
-			case GET_LE: node= first; break;
-			case GET_EQ_LAST:
-			case GET_LE_LAST: node= last; break;
-			case GET_LT:
-			case GET_PREV: node= rbtree_node_prev(first); break;
-			case GET_GT:
-			case GET_NEXT: node= rbtree_node_next(last); break;
-			default: croak("BUG: unhandled mode");
-			}
-		} else {
-			// Didn't find an exact match.  First and last are the bounds of what would have matched.
-			switch (mode) {
-			case GET_EQ:
-			case GET_EQ_LAST: node= NULL; break;
-			case GET_GE:
-			case GET_GT: node= last; break;
-			case GET_LE:
-			case GET_LE_LAST:
-			case GET_LT: node= first; break;
-			case GET_PREV:
-			case GET_NEXT: node= NULL; break;
-			default: croak("BUG: unhandled mode");
-			}
-		}
-		if (node) {
-			item= GET_TreeRBXS_item_FROM_rbnode(node);
+		item= TreeRBXS_find_item(tree, &stack_item, mode);
+		if (item) {
 			if (ix == 0) { // lookup in list context
 				ST(0)= item->value;
 				ST(1)= sv_2mortal(TreeRBXS_wrap_item(item));
@@ -1650,17 +1657,72 @@ done(iter)
 void
 next(iter)
 	struct TreeRBXS_iter *iter
-	INIT:
-		struct TreeRBXS_item *cur= iter->item;
+	ALIAS:
+		Tree::RB::XS::Iter::next        = 0
+		Tree::RB::XS::Iter::next_key    = 1
+		Tree::RB::XS::Iter::next_value  = 2
 	PPCODE:
-		if (cur)
-			TreeRBXS_iter_advance(iter, 1);
 		// Avoid creating a Node object in void context
-		if (GIMME_V == G_VOID)
+		if (GIMME_V == G_VOID) {
+			TreeRBXS_iter_advance(iter, 1);
 			XSRETURN(0);
+		}
 		else {
-			ST(0)= TreeRBXS_wrap_item(cur);
+			ST(0)= ix == 0? sv_2mortal(TreeRBXS_wrap_item(iter->item)) // null becomes undef
+				: ix == 1? sv_2mortal(TreeRBXS_item_wrap_key(iter->item))
+				: (iter->item? iter->item->value : &PL_sv_undef);
+			TreeRBXS_iter_advance(iter, 1);
 			XSRETURN(1);
+		}
+
+void
+next_nodes(iter, count_sv)
+	struct TreeRBXS_iter *iter
+	SV* count_sv
+	ALIAS:
+		Tree::RB::XS::Iter::next_nodes   = 0
+		Tree::RB::XS::Iter::next_keys    = 1
+		Tree::RB::XS::Iter::next_values  = 2
+		Tree::RB::XS::Iter::next_kv      = 3
+	INIT:
+		size_t pos, n, i, tree_count= iter->tree->root_sentinel.left->count;
+		IV request= SvPOK(count_sv) && *SvPV_nolen(count_sv) == '*'? tree_count
+			: SvIV(count_sv);
+		rbtree_node_t *node;
+		rbtree_node_t *(*step)(rbtree_node_t *)= iter->reverse? &rbtree_node_prev : rbtree_node_next;
+	PPCODE:
+		if (iter->item) {
+			pos= rbtree_node_index(&iter->item->rbnode);
+			// calculate how many nodes will be returned
+			n= iter->reverse? 1 + pos : tree_count - pos;
+			if (n > request) n= request;
+			node= &iter->item->rbnode;
+			EXTEND(SP, ix == 3? 2*n : n);
+			if (ix == 0) {
+				for (i= 0; i < n && node; i++, node= step(node))
+					ST(i)= sv_2mortal(TreeRBXS_wrap_item(GET_TreeRBXS_item_FROM_rbnode(node)));
+			}
+			else if (ix == 1) {
+				for (i= 0; i < n && node; i++, node= step(node))
+					ST(i)= sv_2mortal(TreeRBXS_item_wrap_key(GET_TreeRBXS_item_FROM_rbnode(node)));
+			}
+			else if (ix == 2) {
+				for (i= 0; i < n && node; i++, node= step(node))
+					ST(i)= GET_TreeRBXS_item_FROM_rbnode(node)->value;
+			}
+			else {
+				for (i= 0; i < n && node; i++, node= step(node)) {
+					ST(i*2)= sv_2mortal(TreeRBXS_item_wrap_key(GET_TreeRBXS_item_FROM_rbnode(node)));
+					ST(i*2+1)= GET_TreeRBXS_item_FROM_rbnode(node)->value;
+				}
+			}
+			if (i != n)
+				croak("BUG: expected %ld nodes but found %ld", (long) n, (long) i);
+			TreeRBXS_iter_advance(iter, n);
+			XSRETURN(ix == 3? 2*n : n);
+		} else {
+			// end of iteration, nothing to do
+			XSRETURN(0);
 		}
 
 bool

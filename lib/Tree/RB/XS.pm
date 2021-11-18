@@ -559,6 +559,38 @@ current Node.
 Return the current node (as a L<node object|/NODE OBJECTS>) and advance to the following node
 in the sequence.  After the end of the sequence, calls to C<next> return C<undef>.
 
+=item next_key
+
+Same as C<next>, but return the key of the node.
+
+=item next_value
+
+Same as C<next>, but return the value of the node.
+
+=item next_nodes
+
+  my @nodes= $iter->next_nodes($n);
+               ...->next_nodes('*');
+
+Return the next C<$n> nodes (or use '*' for all nodes) in the sequence.  This will return a
+short count (and empty list after that) at the end of the sequence.
+
+=item next_keys
+
+Same as C<next_nodes>, but return the keys of the nodes.
+
+=item next_values
+
+Same as C<next_nodes>, but return the values of the nodes.
+
+=item next_kv
+
+  my %x= $iter->next_kv('*');
+
+Same as C<next_nodes>, but return pairs of key and value.  This is useful for dumping them into
+a hash. (B<unless> you have duplicate keys enabled, then don't dump them into a hash or you
+would lose elements)
+
 =item step
 
     $iter->step;     # advance by one node
