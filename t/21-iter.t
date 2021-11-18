@@ -13,6 +13,8 @@ subtest iterate_gap => sub {
 	is( $tree->iter(3)->next->value, 4, 'at(3) = 4' );
 	is( $tree->rev_iter(1)->next->value, 1, 'rev at(1) = 1' );
 	is( $tree->rev_iter(3)->next->value, 2, 'rev at(3) = 2' );
+	++$_ for $tree->iter(2)->value;
+	is( $tree->iter(2)->next->value, 3 );
 	undef $tree;
 	is( $tref, undef, 'tree freed' );
 };
@@ -158,11 +160,13 @@ subtest iter_get_multi => sub {
 	is( [ $tree->rev_iter(1)->next_keys(1) ], [ 1 ], 'reverse next_keys for 1' );
 	is( [ $tree->iter->next_keys(0) ], [], 'iterate nothing' );
 	is( [ $tree->iter->next_values(4) ], [ 0, 2, 4, 6 ], 'next_values(4)' );
-	is( [ $tree->iter->next_nodes(2) ], [
+	is( [ $tree->iter->next(2) ], [
 		object{ call key => 0; call value => 0; etc; },
 		object{ call key => 1; call value => 2; etc; },
 	], 'next_nodes(2)' );
 	is( [ $tree->iter(1)->next_kv(2) ], [ 1, 2, 2, 4 ], 'next_kv' );
+	++$_ for $tree->iter->next_values('*');
+	is( $tree->nth(10)->value, 21, 'modified value' );
 	undef $tree;
 	is( $tref, undef, 'tree freed' );
 };

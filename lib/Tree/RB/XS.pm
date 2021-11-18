@@ -513,7 +513,7 @@ sub Tree::RB::XS::Node::rev_iter {
 
 Iterators are similar to Nodes, but they hold a strong reference to the tree, and if a node
 they point to is removed from the tree they advance to the next node.  (and obviously they
-iterate and node objects do not)
+iterate, where node objects do not)
 
 The iterator references a "current node" which you can inspect the key and value of.  You
 can call 'step' to move to a new current node, and you can call 'next' which returns the
@@ -533,7 +533,10 @@ The key of the current node.
 
 =item value
 
-The value of the current node.
+The value of the current node.  Note that this returns the actual value, which in an aliased
+context allows you to modify the value stored in the tree.
+
+  $_++ for $iter->value;
 
 =item index
 
@@ -556,40 +559,35 @@ current Node.
 
 =item next
 
+  my $nodes= $iter->next;
+  my @nodes= $iter->next($count);
+  my @nodes= $iter->next('*');
+
 Return the current node (as a L<node object|/NODE OBJECTS>) and advance to the following node
 in the sequence.  After the end of the sequence, calls to C<next> return C<undef>.
-
-=item next_key
-
-Same as C<next>, but return the key of the node.
-
-=item next_value
-
-Same as C<next>, but return the value of the node.
-
-=item next_nodes
-
-  my @nodes= $iter->next_nodes($n);
-               ...->next_nodes('*');
-
-Return the next C<$n> nodes (or use '*' for all nodes) in the sequence.  This will return a
-short count (and empty list after that) at the end of the sequence.
+If you pass the optional C<$count>, it will return up to that many nodes, as a list.
+It will also return an empty list at the end of the sequence instead of returning C<undef>.
+You can use the string C<'*'> for the count to indicate all the rest of the nodes in the
+sequence.
 
 =item next_keys
 
-Same as C<next_nodes>, but return the keys of the nodes.
+Same as C<next>, but return the keys of the nodes.
 
 =item next_values
 
-Same as C<next_nodes>, but return the values of the nodes.
+Same as C<next>, but return the values of the nodes.  Like L</value>, these are also aliases,
+and can be modified.
+
+  $_++ for $iter->next_values('*');
 
 =item next_kv
 
   my %x= $iter->next_kv('*');
 
-Same as C<next_nodes>, but return pairs of key and value.  This is useful for dumping them into
-a hash. (B<unless> you have duplicate keys enabled, then don't dump them into a hash or you
-would lose elements)
+Same as C<next>, but return pairs of key and value for each node.  This is useful for dumping
+them into a hash. (B<unless> you have duplicate keys enabled, then don't dump them into a hash
+or you would lose elements)
 
 =item step
 

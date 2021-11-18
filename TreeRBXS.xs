@@ -1655,74 +1655,78 @@ done(iter)
 		RETVAL
 
 void
-next(iter)
-	struct TreeRBXS_iter *iter
-	ALIAS:
-		Tree::RB::XS::Iter::next        = 0
-		Tree::RB::XS::Iter::next_key    = 1
-		Tree::RB::XS::Iter::next_value  = 2
-	PPCODE:
-		// Avoid creating a Node object in void context
-		if (GIMME_V == G_VOID) {
-			TreeRBXS_iter_advance(iter, 1);
-			XSRETURN(0);
-		}
-		else {
-			ST(0)= ix == 0? sv_2mortal(TreeRBXS_wrap_item(iter->item)) // null becomes undef
-				: ix == 1? sv_2mortal(TreeRBXS_item_wrap_key(iter->item))
-				: (iter->item? iter->item->value : &PL_sv_undef);
-			TreeRBXS_iter_advance(iter, 1);
-			XSRETURN(1);
-		}
-
-void
-next_nodes(iter, count_sv)
+next(iter, count_sv= NULL)
 	struct TreeRBXS_iter *iter
 	SV* count_sv
 	ALIAS:
-		Tree::RB::XS::Iter::next_nodes   = 0
+		Tree::RB::XS::Iter::next         = 0
 		Tree::RB::XS::Iter::next_keys    = 1
 		Tree::RB::XS::Iter::next_values  = 2
 		Tree::RB::XS::Iter::next_kv      = 3
 	INIT:
 		size_t pos, n, i, tree_count= iter->tree->root_sentinel.left->count;
-		IV request= SvPOK(count_sv) && *SvPV_nolen(count_sv) == '*'? tree_count
-			: SvIV(count_sv);
+		IV request;
 		rbtree_node_t *node;
 		rbtree_node_t *(*step)(rbtree_node_t *)= iter->reverse? &rbtree_node_prev : rbtree_node_next;
 	PPCODE:
 		if (iter->item) {
-			pos= rbtree_node_index(&iter->item->rbnode);
-			// calculate how many nodes will be returned
-			n= iter->reverse? 1 + pos : tree_count - pos;
-			if (n > request) n= request;
-			node= &iter->item->rbnode;
-			EXTEND(SP, ix == 3? 2*n : n);
-			if (ix == 0) {
-				for (i= 0; i < n && node; i++, node= step(node))
-					ST(i)= sv_2mortal(TreeRBXS_wrap_item(GET_TreeRBXS_item_FROM_rbnode(node)));
+			request= !count_sv? 1
+				: SvPOK(count_sv) && *SvPV_nolen(count_sv) == '*'? tree_count
+				: SvIV(count_sv);
+			if (request < 1) {
+				n= i= 0;
 			}
-			else if (ix == 1) {
-				for (i= 0; i < n && node; i++, node= step(node))
-					ST(i)= sv_2mortal(TreeRBXS_item_wrap_key(GET_TreeRBXS_item_FROM_rbnode(node)));
+			// A request for 1 is simpler because there is no need to count how many will be returned.
+			// iter->item wasn't NULL so it is guaranteed to be 1.
+			else if (GIMME_V == G_VOID) {
+				// skip all the busywork if called in void context
+				// (but still advance the iterator below)
+				n= request;
+				i= 0;
 			}
-			else if (ix == 2) {
-				for (i= 0; i < n && node; i++, node= step(node))
-					ST(i)= GET_TreeRBXS_item_FROM_rbnode(node)->value;
+			else if (request == 1) {
+				n= i= 1;
+				ST(0)= ix == 0? sv_2mortal(TreeRBXS_wrap_item(iter->item))
+					: ix == 2? iter->item->value
+					: sv_2mortal(TreeRBXS_item_wrap_key(iter->item));
+				if (ix == 3)
+					ST(1)= iter->item->value;
 			}
 			else {
-				for (i= 0; i < n && node; i++, node= step(node)) {
-					ST(i*2)= sv_2mortal(TreeRBXS_item_wrap_key(GET_TreeRBXS_item_FROM_rbnode(node)));
-					ST(i*2+1)= GET_TreeRBXS_item_FROM_rbnode(node)->value;
+				pos= rbtree_node_index(&iter->item->rbnode);
+				// calculate how many nodes will be returned
+				n= iter->reverse? 1 + pos : tree_count - pos;
+				if (n > request) n= request;
+				node= &iter->item->rbnode;
+				EXTEND(SP, ix == 3? 2*n : n);
+				if (ix == 0) {
+					for (i= 0; i < n && node; i++, node= step(node))
+						ST(i)= sv_2mortal(TreeRBXS_wrap_item(GET_TreeRBXS_item_FROM_rbnode(node)));
 				}
+				else if (ix == 1) {
+					for (i= 0; i < n && node; i++, node= step(node))
+						ST(i)= sv_2mortal(TreeRBXS_item_wrap_key(GET_TreeRBXS_item_FROM_rbnode(node)));
+				}
+				else if (ix == 2) {
+					for (i= 0; i < n && node; i++, node= step(node))
+						ST(i)= GET_TreeRBXS_item_FROM_rbnode(node)->value;
+				}
+				else {
+					for (i= 0; i < n && node; i++, node= step(node)) {
+						ST(i*2)= sv_2mortal(TreeRBXS_item_wrap_key(GET_TreeRBXS_item_FROM_rbnode(node)));
+						ST(i*2+1)= GET_TreeRBXS_item_FROM_rbnode(node)->value;
+					}
+				}
+				if (i != n)
+					croak("BUG: expected %ld nodes but found %ld", (long) n, (long) i);
 			}
-			if (i != n)
-				croak("BUG: expected %ld nodes but found %ld", (long) n, (long) i);
 			TreeRBXS_iter_advance(iter, n);
-			XSRETURN(ix == 3? 2*n : n);
+			XSRETURN(ix == 3? 2*i : i);
 		} else {
 			// end of iteration, nothing to do
-			XSRETURN(0);
+			ST(0)= &PL_sv_undef;
+			// return the undef only if the user didn't specify a count
+			XSRETURN(count_sv? 0 : 1);
 		}
 
 bool
