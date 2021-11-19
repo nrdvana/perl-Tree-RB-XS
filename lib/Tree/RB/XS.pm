@@ -27,7 +27,7 @@ our %EXPORT_TAGS= (
 B<NOTICE:> This module is very new and you should give it some thorough testing before
 trusting it with production data.
 
-  use Tree::RB::XS qw/ :cmp :get :key_type /;
+  use Tree::RB::XS qw/ :cmp :get /;
   
   my $tree= Tree::RB::XS->new;
   $tree->put($_ => $_) for 'a'..'z';    # store key/value, overwrite
@@ -109,7 +109,7 @@ Many functions have official names changed, but aliases are provided for compati
 =head2 new
 
   my $tree= Tree::RB::XS->new( %OPTIONS );
-                     ...->new( \&compare_fn );
+                     ...->new( $compare_fn );
 
 If C<new> is given a single parameter, it is assumed to be the C<compare_fn>.
 
@@ -117,20 +117,11 @@ Options:
 
 =over
 
-=item L</key_type>
-
-Choose an optimized storage for keys.  The default is L</KEY_TYPE_ANY> which stores
-whole perl scalars.  All the other types are faster, but perl scalars give the fewest
-surprises.  If importing constants is annoying, you can specify one of C<"any">,
-C<"int">, C<"float">, C<"bstr">, or C<"ustr">.
-
 =item L</compare_fn>
 
-Choose a custom key-compare function.  The default is C<CMP_PERL> which gives
-you the behavior of Perl's C<cmp> operator.
-You can supply a custom coderef, but avoid doing that if you are concerned about
-speed; consider pre-processing your keys instead, to be able to use one of the
-L<built-in compare functions|/Comparison Functions>.
+Choose a custom key-compare function.  This can be the ID of an optimized function,
+a coderef, or the name of one of the optimized IDs like "int" for C<CMP_INT>.
+See below for details.
 
 =item L</allow_duplicates>
 
@@ -140,6 +131,11 @@ Whether to allow two nodes with the same key.  Defaults to false.
 
 Whether to enable full compatibility with L<Tree::RB>'s list-context behavior for L</get>.
 Defaults to false.
+
+=item L</key_type>
+
+This is an internal detail that probably shouldn't have been exposed, and might be removed
+in the future.  Choose one of the optimized C<compare_fn> instead.
 
 =back
 
@@ -159,39 +155,22 @@ sub new {
 
 =head1 ATTRIBUTES
 
-=head2 key_type
-
-The key-storage strategy used by the tree.  Read-only; pass as an option to
-the constructor.
-
-This is one of the following values: L</KEY_TYPE_ANY>, L</KEY_TYPE_INT>,
-L</KEY_TYPE_FLOAT>, L</KEY_TYPE_BSTR>, or L</KEY_TYPE_USTR>.
-See the description in EXPORTS for full details on each.
-
-Integers are of course the most efficient, followed by floats, followed by
-byte-strings and unicode-strings, followed by 'ANY' (which stores a whole
-perl scalar).  BSTR and USTR are both faster than operating on Perl scalars,
-but both save an internal copy of your key and might be a bad idea if your
-keys are extremely large and nodes are frequently added to the tree.
-(modern Perls can copy-on-write to avoid copying the key)
-
 =head2 compare_fn
 
 Specifies the function that compares keys.  Read-only; pass as an option to
 the constructor.
 
-This is one of: L</CMP_PERL>, L</CMP_INT>, L</CMP_FLOAT>, L</CMP_MEMCMP>,
-L</CMP_UTF8>, L</CMP_NUMSPLIT>, or a coderef.
+This is one of: L</CMP_PERL> (default), L</CMP_INT>, L</CMP_FLOAT>, L</CMP_MEMCMP>,
+L</CMP_UTF8>, L</CMP_NUMSPLIT>, or a coderef.  C<CMP_INT> and C<CMP_FLOAT> are the
+most efficient, and internally store the key as a number.  C<CMP_MEMCMP> and
+C<CMP_UTF8> copy the key into an internal buffer, and offer moderate speed gains
+over C<CMP_PERL>.  C<CMP_PERL> is Perl's own C<cmp> operator.
 
-If set to a perl coderef, it should take two parameters and return an integer
+If set to a coderef, it should take two parameters and return an integer
 indicating their order in the same manner as Perl's C<cmp>.
-Note that this forces C<< key_type => KEY_TYPE_ANY >>.
 Beware that using a custom coderef throws away most of the speed gains from using
-this XS variant over plain L<Tree::RB>.
-
-The default comparison is C<CMP_PERL> which is equivalent to Perl's own C<cmp>
-comparator.  If you specify a C<key_type> and not a C<compare_fn>, the default
-comparator depends on the C<key_type>.
+this XS variant over plain L<Tree::RB>.  If speed is important, try pre-processing
+your keys in a way that allows you to use one of the built-in ones.
 
 Patches welcome, for anyone who wants to expand the list of optimized built-in
 comparison functions.
@@ -210,6 +189,12 @@ I wanted to match the API of C<Tree::RB>, but I can't bring myself to make an in
 method like 'get' change its behavior in list context.  So, by deault, this attribute is
 false and C<get> always returns one value.  But if you set this to true, C<get> changes in
 list context to also return the Node, like is done in L<Tree::RB/lookup>.
+
+=head2 key_type
+
+The key-storage strategy used by the tree.  Read-only; pass as an option to
+the constructor.  This is an implementation detail that may be removed in a future
+version.
 
 =head2 size
 
@@ -683,42 +668,6 @@ sub hseek {
 
 =head1 EXPORTS
 
-=head2 Key Types
-
-Export all with ':key_type';
-
-=over
-
-=item KEY_TYPE_ANY
-
-This C<key_type> causes the tree to store whole Perl scalars for each node.
-Its default comparison function is Perl's own C<cmp> operator.
-
-=item KEY_TYPE_INT
-
-This C<key_type> causes the tree to store keys as Perl's integers,
-which are either 32-bit or 64-bit depending on how Perl was compiled.
-Its default comparison function puts the numbers in non-decreasing order.
-
-=item KEY_TYPE_FLOAT
-
-This C<key_type> causes the tree to store keys as Perl's floating point type,
-which are either 64-bit doubles or 80-bit long-doubles.
-Its default comparison function puts the numbers in non-decreasing order.
-
-=item KEY_TYPE_BSTR
-
-This C<key_type> causes the tree to store keys as byte strings.
-The default comparison function is the standard Libc C<memcmp>.
-
-=item KEY_TYPE_USTR
-
-Same as C<KEY_TYPE_BSTR> but reads the bytes from the supplied key as UTF-8 bytes.
-The default comparison function is also C<memcmp> even though this does not sort
-Unicode correctly.  (for correct unicode, use C<KEY_TYPE_ANY>, but it's slower...)
-
-=back
-
 =head2 Comparison Functions
 
 Export all with ':cmp'
@@ -782,6 +731,42 @@ or
 
 If the C<key_type> is C<KEY_TYPE_BSTR> this will sort the string portions using
 C<memcmp>, else they are sorted with Perl's unicode-aware sort.
+
+=back
+
+=head2 Key Types
+
+Export all with ':key_type';
+
+=over
+
+=item KEY_TYPE_ANY
+
+This C<key_type> causes the tree to store whole Perl scalars for each node.
+Its default comparison function is Perl's own C<cmp> operator.
+
+=item KEY_TYPE_INT
+
+This C<key_type> causes the tree to store keys as Perl's integers,
+which are either 32-bit or 64-bit depending on how Perl was compiled.
+Its default comparison function puts the numbers in non-decreasing order.
+
+=item KEY_TYPE_FLOAT
+
+This C<key_type> causes the tree to store keys as Perl's floating point type,
+which are either 64-bit doubles or 80-bit long-doubles.
+Its default comparison function puts the numbers in non-decreasing order.
+
+=item KEY_TYPE_BSTR
+
+This C<key_type> causes the tree to store keys as byte strings.
+The default comparison function is the standard Libc C<memcmp>.
+
+=item KEY_TYPE_USTR
+
+Same as C<KEY_TYPE_BSTR> but reads the bytes from the supplied key as UTF-8 bytes.
+The default comparison function is also C<memcmp> even though this does not sort
+Unicode correctly.  (for correct unicode, use C<KEY_TYPE_ANY>, but it's slower...)
 
 =back
 
@@ -856,19 +841,5 @@ Has alias C<LUPREV> to match Tree::RB.
 *LULESS=  *GET_LT;
 *LUPREV=  *GET_PREV;
 *LUNEXT=  *GET_NEXT;
-
-=head1 BUGS AND LIMITATIONS
-
-=over
-
-=item *
-
-Before Perl 5.14, there isn't any built-in utf8-aware case-sensitive compare function, so
-requests for C<CMP_UTF8> get changed to C<CMP_PERL> (with C<KEY_TYPE_ANY>) and C<CMP_NUMSPLIT>
-loses UTF8-awareness.
-
-=back
-
-=cut
 
 1;

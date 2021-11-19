@@ -1,4 +1,9 @@
-Version 0.03 - 2011-11-18
+Version 0.04 - 2021-11-19
+
+  - Implement hseek
+  - Fix more bugs in utf8 comparisons (should be really fixed this time)
+
+Version 0.03 - 2021-11-18
 
   - New XS iterators, with lots of new methods: clone, key, value, index,
      tree, next_kv, next_keys, next_values, step, delete.
