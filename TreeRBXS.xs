@@ -20,6 +20,18 @@ struct TreeRBXS_item;
 #define KEY_TYPE_USTR  6
 #define KEY_TYPE_MAX   6
 
+/* I am only using foldEQ for parsing user parameters, not for the sort functions,
+ * so this should be fine for Perl < 5.14 */
+#ifndef foldEQ
+static bool shim_foldEQ(const char *s1, const char *s2, int len) {
+	for (--len; len >= 0; --len)
+		if (toLOWER(s1[len]) != toLOWER(s2[len]))
+			return 0;
+	return 1;
+}
+#define foldEQ shim_foldEQ
+#endif
+
 static int parse_key_type(SV *type_sv) {
 	const char *str;
 	size_t len;
@@ -603,12 +615,14 @@ static int TreeRBXS_cmp_memcmp(struct TreeRBXS *tree, struct TreeRBXS_item *a, s
 	return cmp? cmp : alen < blen? -1 : alen > blen? 1 : 0;
 }
 
+#if PERL_VERSION_GE(5,14,0)
 static int TreeRBXS_cmp_utf8(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
 	return bytes_cmp_utf8(
 		(unsigned char*)a->keyunion.ckey, a->ckeylen,
 		(unsigned char*)b->keyunion.ckey, b->ckeylen
 	);
 }
+#endif
 
 static int TreeRBXS_cmp_numsplit(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
 	const char *apos, *alim, *amark;
@@ -645,10 +659,13 @@ static int TreeRBXS_cmp_numsplit(struct TreeRBXS *tree, struct TreeRBXS_item *a,
 			if (alen == 0) return -1;
 			if (blen == 0) return 1;
 			// else compare the portions in common.
+#if PERL_VERSION_GE(5,14,0)
 			if (tree->key_type != KEY_TYPE_BSTR) {
 				cmp= bytes_cmp_utf8((unsigned char*)amark, alen, (unsigned char*)bmark, blen);
 				if (cmp) return cmp;
-			} else {
+			} else
+#endif
+			{
 				cmp= memcmp(amark, bmark, alen < blen? alen : blen);
 				if (cmp) return cmp;
 				if (alen < blen) return -1;
@@ -984,11 +1001,15 @@ _init_tree(obj, key_type_sv, compare_fn)
 			cmp_id= key_type == KEY_TYPE_INT?   CMP_INT
 			      : key_type == KEY_TYPE_FLOAT? CMP_FLOAT
 			      : key_type == KEY_TYPE_BSTR?  CMP_MEMCMP
-			      : key_type == KEY_TYPE_USTR?  CMP_UTF8
+				  : key_type == KEY_TYPE_USTR?  CMP_UTF8
 			      : key_type == KEY_TYPE_ANY?   CMP_PERL /* use Perl's cmp operator */
 			      : key_type == KEY_TYPE_CLAIM? CMP_PERL
 			      : CMP_PERL;
 		}
+#if PERL_VERSION_LT(5,14,0)
+		if (key_type == KEY_TYPE_USTR) key_type= KEY_TYPE_ANY;
+		if (cmp_id == CMP_UTF8) cmp_id= CMP_PERL;
+#endif
 		
 		tree= TreeRBXS_get_magic_tree(obj, AUTOCREATE|OR_DIE);
 		if (tree->owner != SvRV(obj))
@@ -1003,6 +1024,12 @@ _init_tree(obj, key_type_sv, compare_fn)
 			tree->key_type= key_type == KEY_TYPE_CLAIM? key_type : KEY_TYPE_ANY;
 			tree->compare= TreeRBXS_cmp_perl_cb;
 			break;
+		case CMP_UTF8:
+#if PERL_VERSION_GE(5,14,0)
+			tree->key_type= KEY_TYPE_USTR;
+			tree->compare= TreeRBXS_cmp_utf8;
+			break;
+#endif
 		case CMP_PERL:
 			tree->key_type= key_type == KEY_TYPE_CLAIM? key_type : KEY_TYPE_ANY;
 			tree->compare= TreeRBXS_cmp_perl;
@@ -1018,10 +1045,6 @@ _init_tree(obj, key_type_sv, compare_fn)
 		case CMP_MEMCMP:
 			tree->key_type= KEY_TYPE_BSTR;
 			tree->compare= TreeRBXS_cmp_memcmp;
-			break;
-		case CMP_UTF8:
-			tree->key_type= KEY_TYPE_USTR;
-			tree->compare= TreeRBXS_cmp_utf8;
 			break;
 		case CMP_NUMSPLIT:
 			tree->key_type= key_type == KEY_TYPE_BSTR || key_type == KEY_TYPE_USTR

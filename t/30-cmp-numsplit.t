@@ -71,7 +71,7 @@ subtest bytestrings => sub {
 	is( \@tree_sorted, \@perl_sorted );
 };
 
-subtest unistrings => sub {
+$] >= 5.014000 && subtest unistrings => sub {
 	my $tree= Tree::RB::XS->new(compare_fn => 'numsplit', key_type => KEY_TYPE_USTR, allow_duplicates => 1);
 	is( $tree->compare_fn, CMP_NUMSPLIT );
 	is( $tree->key_type, KEY_TYPE_USTR );

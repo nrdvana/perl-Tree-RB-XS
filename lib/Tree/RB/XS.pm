@@ -809,4 +809,18 @@ Has alias C<LUPREV> to match Tree::RB.
 *LUPREV=  *GET_PREV;
 *LUNEXT=  *GET_NEXT;
 
+=head1 BUGS AND LIMITATIONS
+
+=over
+
+=item *
+
+Before Perl 5.14, there isn't any built-in utf8-aware case-sensitive compare function, so
+requests for C<CMP_UTF8> get changed to C<CMP_PERL> (with C<KEY_TYPE_ANY>) and C<CMP_NUMSPLIT>
+loses UTF8-awareness.
+
+=back
+
+=cut
+
 1;
