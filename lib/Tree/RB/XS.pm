@@ -27,35 +27,51 @@ our %EXPORT_TAGS= (
 B<NOTICE:> This module is very new and you should give it some thorough testing before
 trusting it with production data.
 
-  use Tree::RB::XS qw/ :key_type :get /;
+  use Tree::RB::XS qw/ :cmp :get :key_type /;
   
   my $tree= Tree::RB::XS->new;
-  $tree->put($_ => $_) for 'a'..'z';
-  say $tree->get('a');
-  $tree->delete('a');
-  say $tree->get('a', GET_GT); # finds 'b'
-  $tree->delete('a','z');
-  $tree->delete($tree->min, $tree->max);
+  $tree->put($_ => $_) for 'a'..'z';    # store key/value, overwrite
+  say $tree->get('a');                  # get value by key, or undef
+  $tree->delete('a');                   # delete by key
+  say $tree->get('a', GET_GT);          # find relative to the key, finds 'b'
+  $tree->delete('a','z');               # delete a range, inclusive
+  $tree->delete($tree->min_node);       # delete using nodes or iterators
+  $tree->clear;                         # efficiently delete all nodes
   
-  # optimize for integer comparisons
-  $tree= Tree::RB::XS->new(key_type => KEY_TYPE_INT);
+  $tree= Tree::RB::XS->new(CMP_INT);    # optimize for integer comparisons
   $tree->put(1 => "x");
 
-  # optimize for floating-point comparisons
-  $tree= Tree::RB::XS->new(key_type => 'float', allow_duplicates => 1);
+  $tree= Tree::RB::XS->new(
+    compare_fn => 'float',              # optimize for floating-point
+    allow_duplicates => 1
+  );
   $tree->put(rand() => 1) for 1..1000;
   $tree->delete(0, $tree->get_node_lt(.5));
-
-  # optimize for byte strings
-  $tree= Tree::RB::XS->new(key_type => KEY_TYPE_BSTR);
+  
+  $tree= Tree::RB::XS->new(CMP_MEMCMP); # optimize for byte strings
   $tree->put("test" => "x");
   
-  # inspect the node objects
-  say $tree->min->key;
+  say $tree->min->key;                  # inspect the node objects
   say $tree->nth(0)->key;
   my $node= $tree->min;
   my $next= $node->next;
   $node->prune;
+  
+  # iterators
+  
+  for (my $i= $tree->iter; !$i->done; $i->step) {
+    if ($i->key ...) { $i->value .... }
+  }
+  
+  my $i= $tree->rev_iter;
+  while (my $node= $i->next) {
+    $node->prune if $node->key =~ ...;
+  }
+  
+  my $i= $tree->iter;
+  while (my @batch= $i->next_values(100)) {
+    ...
+  }
 
 =head1 DESCRIPTION
 
@@ -64,7 +80,7 @@ other search trees on CPAN are optimized comparisons of keys (speed), C<< O(log 
 node-by-index lookup (which allows the tree to act as an array), and the option to
 allow duplicate keys while preserving insertion order.
 
-The API is close but not identical to L<Tree::RB>.
+The API is almost a complete superset of L<Tree::RB> with a few differences:
 
 =over
 
@@ -76,10 +92,6 @@ request L</compat_list_get>.
 =item *
 
 C<resort> is not implemented (would be lots of effort, and unlikely to be needed)
-
-=item *
-
-tie-hash interface and hseek are not implemented.  (not hard, but does anyone need it?)
 
 =item *
 
@@ -99,6 +111,8 @@ Many functions have official names changed, but aliases are provided for compati
   my $tree= Tree::RB::XS->new( %OPTIONS );
                      ...->new( \&compare_fn );
 
+If C<new> is given a single parameter, it is assumed to be the C<compare_fn>.
+
 Options:
 
 =over
@@ -116,7 +130,7 @@ Choose a custom key-compare function.  The default is C<CMP_PERL> which gives
 you the behavior of Perl's C<cmp> operator.
 You can supply a custom coderef, but avoid doing that if you are concerned about
 speed; consider pre-processing your keys instead, to be able to use one of the
-built-in compare functions.
+L<built-in compare functions|/Comparison Functions>.
 
 =item L</allow_duplicates>
 
@@ -133,7 +147,9 @@ Defaults to false.
 
 sub new {
 	my $class= shift;
-	my %options= @_ == 1 && ref $_[0] eq 'CODE'? ( compare_fn => $_[0] ) : @_;
+	my %options= @_ == 1 && ref $_[0] eq 'HASH'? %{$_[0]}
+		: @_ == 1? ( compare_fn => $_[0] )
+		: @_;
 	my $self= bless \%options, $class;
 	$self->_init_tree(delete $self->{key_type}, delete $self->{compare_fn});
 	$self->allow_duplicates(1) if delete $self->{allow_duplicates};
@@ -311,12 +327,12 @@ node after all nodes of the same key, preserving the insertion order.
 Delete any node with a key identical to C<$key>, and return the number of nodes
 removed.  If you supply two keys (or two nodes) this will delete those nodes and
 all nodes inbetween; C<$key1> is searched with mode C<GET_GE> and C<$key2> is
-searched with mode C<GET_LE>, so the keys themselves do not need to be found in
+searched with mode C<GET_LE_LAST>, so the keys themselves do not need to be found in
 the tree.
 The keys (or nodes) must be given in ascending order, else no nodes are deleted.
 
 If you want to delete a range *exclusive* of one or both ends of the range, just
-use the C</get_node> method with the desired mode to look up each end of the nodes
+use the L</get_node> method with the desired mode to look up each end of the nodes
 that you do want removed.
 
 =head2 clear
@@ -332,13 +348,13 @@ the nodes without worrying about the tree structure or shifting iterators aside.
               ...->iter($from_key, $get_mode=GET_GE); # from get_node
               ...->iter($from_node);                  # from existing node
 
-Return an L<iterator object|ITERATOR OBJECTS> that traverses the tree from min to max,
+Return an L<iterator object|/ITERATOR OBJECTS> that traverses the tree from min to max,
 or from the key or node you provide up to max.
 
 =head2 rev_iter
 
 Like C<iter>, but the C<< ->next >> and C<< ->step >> methods walk backward to smaller key
-values, and the default C<$get_mode> is L</GET_GE_LAST>.
+values, and the default C<$get_mode> is L</GET_LE_LAST>.
 
 =cut
 
@@ -566,9 +582,9 @@ or you would lose elements)
 
 =item step
 
-    $iter->step;     # advance by one node
-	$iter->step(10); # advance by 10 nodes
-	$iter->step(-4); # back up 4 nodes
+  $iter->step;     # advance by one node
+  $iter->step(10); # advance by 10 nodes
+  $iter->step(-4); # back up 4 nodes
 
 This moves the iterator by one or more nodes in the forward or backward direction.
 For a reverse-iterator, positive numbers move toward the minimum key and negative numbers
@@ -578,7 +594,7 @@ node, the first node becomes the current node.
 
 =item delete
 
-Delete the "current node", return its value, and advance to the next node.
+Delete the current node, return its value, and advance to the next node.
 
   for (my $i= $tree->iter; !$i->done;) {
     if ($i->key =~ ...) {
