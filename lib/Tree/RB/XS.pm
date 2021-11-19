@@ -365,20 +365,6 @@ sub rev_iter {
 	return $self->_new_iter(-1, $key_or_node);
 }
 
-=head1 TIE HASH INTERFACE
-
-This class implements the methods needed to be tied to a hash:
-
-  my %hash
-  my $tree= tie %hash, 'Class::RB::XS';
-  $hash{$_}= $_ for 1..10;
-
-=cut
-
-*TIEHASH= *new;
-*STORE= *put;
-*CLEAR= *clear;
-
 =head1 NODE OBJECTS
 
 The nodes returned by the methods above have the following attributes:
@@ -523,7 +509,7 @@ Note that if you avoid referencing the Node, and stick to the attributes and met
 iterator, the tree can avoid allocating the Perl object to represent the Node.  This gives a
 bit of a performance boost for large tree operations.
 
-=head2 ITERATOR ATTRIBUTES
+=head2 Iterator Attributes
 
 =over 10
 
@@ -553,7 +539,7 @@ current Node.
 
 =back
 
-=head2 ITERATOR METHODS
+=head2 Iterator Methods
 
 =over 10
 
@@ -602,6 +588,24 @@ the current node becomes C<undef>.  If the offset would take the iterator beyond
 node, the first node becomes the current node.
 
 =back
+
+=head1 TIE HASH INTERFACE
+
+This class implements the methods needed to be tied to a hash:
+
+  my %hash
+  my $tree= tie %hash, 'Class::RB::XS';
+  $hash{$_}= $_ for 1..10;
+  delete $hash{3};
+  $_ += 1 for values %hash;
+
+But you get better performance by using the tree's API directly.
+
+=cut
+
+*TIEHASH= *new;
+*STORE= *put;
+*CLEAR= *clear;
 
 =head1 EXPORTS
 

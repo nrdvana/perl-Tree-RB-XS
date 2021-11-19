@@ -194,7 +194,11 @@ struct TreeRBXS {
 	bool compat_list_get;          // flag to enable full compat with Tree::RB's list context behavior
 	rbtree_node_t root_sentinel;   // parent-of-root, used by rbtree implementation.
 	rbtree_node_t leaf_sentinel;   // dummy node used by rbtree implementation.
+	struct TreeRBXS_iter *hashiter;// iterator used for TIEHASH
 };
+
+#define TreeRBXS_get_root(tree) ((tree)->root_sentinel.left)
+#define TreeRBXS_get_count(tree) ((tree)->root_sentinel.left->count)
 
 #define OFS_TreeRBXS_FIELD_root_sentinel ( ((char*) &(((struct TreeRBXS*)(void*)10000)->root_sentinel)) - ((char*)10000) )
 #define GET_TreeRBXS_FROM_root_sentinel(node) ((struct TreeRBXS*) (((char*)node) - OFS_TreeRBXS_FIELD_root_sentinel))
@@ -247,7 +251,7 @@ static void TreeRBXS_assert_structure(struct TreeRBXS *tree) {
 	if (!tree->compare) croak("no compare function");
 	if ((err= rbtree_check_structure(&tree->root_sentinel, (int(*)(void*,void*,void*)) tree->compare, tree, -OFS_TreeRBXS_item_FIELD_rbnode)))
 		croak("tree structure damaged: %d", err);
-	if (tree->root_sentinel.left->count) {
+	if (TreeRBXS_get_count(tree)) {
 		node= rbtree_node_left_leaf(tree->root_sentinel.left);
 		while (node) {
 			item= GET_TreeRBXS_item_FROM_rbnode(node);
@@ -415,7 +419,7 @@ static void TreeRBXS_iter_advance(struct TreeRBXS_iter *iter, IV ofs) {
 		// More advanced case falls back to by-index, since the log(n) of indexes is likely
 		// about the same as a few hops forward or backward, and because reversing from EOF
 		// means there isn't a current node to step from anyway.
-		cnt= iter->tree->root_sentinel.left->count;
+		cnt= TreeRBXS_get_count(iter->tree);
 		// rbtree measures index in size_t, but this function applies a signed offset to it
 		// of possibly a different word length.  Also, clamp overflows to the ends of the
 		// range of nodes and don't wrap.
@@ -431,7 +435,7 @@ static void TreeRBXS_iter_advance(struct TreeRBXS_iter *iter, IV ofs) {
 		}
 		// swap back for reverse iterators
 		if (iter->reverse) newpos= cnt - 1 - newpos;
-		node= rbtree_node_child_at_index(iter->tree->root_sentinel.left, (size_t)newpos);
+		node= rbtree_node_child_at_index(TreeRBXS_get_root(iter->tree), (size_t)newpos);
 		if (iter->item)
 			TreeRBXS_item_detach_iter(iter->item, iter);
 		if (node)
@@ -505,19 +509,25 @@ static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBX
 		TreeRBXS_item_free(item);
 }
 
+static void TreeRBXS_iter_free(struct TreeRBXS_iter *iter) {
+	if (iter->item)
+		TreeRBXS_item_detach_iter(iter->item, iter);
+	if (iter->tree) {
+		if (iter->tree->hashiter == iter)
+			iter->tree->hashiter= NULL;
+		else
+			SvREFCNT_dec(iter->tree->owner);
+	}
+	Safefree(iter);
+}
+
 static void TreeRBXS_destroy(struct TreeRBXS *tree) {
 	//warn("TreeRBXS_destroy");
 	rbtree_clear(&tree->root_sentinel, (void (*)(void *, void *)) &TreeRBXS_item_detach_tree, -OFS_TreeRBXS_item_FIELD_rbnode, tree);
 	if (tree->compare_callback)
 		SvREFCNT_dec(tree->compare_callback);
-}
-
-static void TreeRBXS_iter_free(struct TreeRBXS_iter *iter) {
-	if (iter->item)
-		TreeRBXS_item_detach_iter(iter->item, iter);
-	if (iter->tree)
-		SvREFCNT_dec(iter->tree->owner);
-	Safefree(iter);
+	if (tree->hashiter)
+		TreeRBXS_iter_free(tree->hashiter);
 }
 
 static struct TreeRBXS_item *TreeRBXS_find_item(struct TreeRBXS *tree, struct TreeRBXS_item *key, int mode) {
@@ -1078,7 +1088,7 @@ IV
 size(tree)
 	struct TreeRBXS *tree
 	CODE:
-		RETVAL= tree->root_sentinel.left->count;
+		RETVAL= TreeRBXS_get_count(tree);
 	OUTPUT:
 		RETVAL
 
@@ -1214,7 +1224,6 @@ get(tree, key, mode_sv= NULL)
 		Tree::RB::XS::FETCH            = 9
 	INIT:
 		struct TreeRBXS_item stack_item, *item;
-		rbtree_node_t *first, *last, *node= NULL;
 		int mode= 0;
 	PPCODE:
 		if (!SvOK(key))
@@ -1385,7 +1394,7 @@ IV
 clear(tree)
 	struct TreeRBXS *tree
 	CODE:
-		RETVAL= tree->root_sentinel.left->count;
+		RETVAL= TreeRBXS_get_count(tree);
 		rbtree_clear(&tree->root_sentinel, (void (*)(void *, void *)) &TreeRBXS_item_detach_tree,
 			-OFS_TreeRBXS_item_FIELD_rbnode, tree);
 	OUTPUT:
@@ -1395,7 +1404,7 @@ struct TreeRBXS_item *
 min_node(tree)
 	struct TreeRBXS *tree
 	INIT:
-		rbtree_node_t *node= rbtree_node_left_leaf(tree->root_sentinel.left);
+		rbtree_node_t *node= rbtree_node_left_leaf(TreeRBXS_get_root(tree));
 	CODE:
 		RETVAL= node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
 	OUTPUT:
@@ -1405,7 +1414,7 @@ struct TreeRBXS_item *
 max_node(tree)
 	struct TreeRBXS *tree
 	INIT:
-		rbtree_node_t *node= rbtree_node_right_leaf(tree->root_sentinel.left);
+		rbtree_node_t *node= rbtree_node_right_leaf(TreeRBXS_get_root(tree));
 	CODE:
 		RETVAL= node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
 	OUTPUT:
@@ -1418,8 +1427,8 @@ nth_node(tree, ofs)
 	INIT:
 		rbtree_node_t *node;
 	CODE:
-		if (ofs < 0) ofs += tree->root_sentinel.left->count;
-		node= rbtree_node_child_at_index(tree->root_sentinel.left, ofs);
+		if (ofs < 0) ofs += TreeRBXS_get_count(tree);
+		node= rbtree_node_child_at_index(TreeRBXS_get_root(tree), ofs);
 		RETVAL= node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL;
 	OUTPUT:
 		RETVAL
@@ -1428,8 +1437,8 @@ struct TreeRBXS_item *
 root_node(tree)
 	struct TreeRBXS *tree
 	CODE:
-		RETVAL= !tree->root_sentinel.left->count? NULL
-			: GET_TreeRBXS_item_FROM_rbnode(tree->root_sentinel.left);
+		RETVAL= !TreeRBXS_get_count(tree)? NULL
+			: GET_TreeRBXS_item_FROM_rbnode(TreeRBXS_get_root(tree));
 	OUTPUT:
 		RETVAL
 
@@ -1451,12 +1460,12 @@ _init_iter(tree, iter_sv, direction, item_sv=NULL)
 		if (tree->owner)
 			SvREFCNT_inc(tree->owner);
 		if (!item) {
-			if (tree->root_sentinel.left->count == 0)
+			if (TreeRBXS_get_count(tree) == 0)
 				node= NULL;
 			else if (direction == 1)
-				node= rbtree_node_left_leaf(tree->root_sentinel.left);
+				node= rbtree_node_left_leaf(TreeRBXS_get_root(tree));
 			else if (direction == -1)
-				node= rbtree_node_right_leaf(tree->root_sentinel.left);
+				node= rbtree_node_right_leaf(TreeRBXS_get_root(tree));
 			else
 				croak("Unhandled 'direction' %d", direction);
 			if (node)
@@ -1465,6 +1474,80 @@ _init_iter(tree, iter_sv, direction, item_sv=NULL)
 		if (item)
 			TreeRBXS_item_attach_iter(item, iter);
 		ST(0)= iter_sv;
+		XSRETURN(1);
+
+SV *
+FIRSTKEY(tree)
+	struct TreeRBXS *tree
+	INIT:
+		rbtree_node_t *node= rbtree_node_left_leaf(TreeRBXS_get_root(tree));
+	CODE:
+		if (!node)
+			RETVAL= &PL_sv_undef;
+		else {
+			// This iterator is owned by the tree.  All other iterators would hold a reference to the tree.
+			if (!tree->hashiter) {
+				Newxz(tree->hashiter, 1, struct TreeRBXS_iter);
+				tree->hashiter->tree= tree;
+			}
+			if (tree->hashiter->item)
+				TreeRBXS_item_detach_iter(tree->hashiter->item, tree->hashiter);
+			TreeRBXS_item_attach_iter(GET_TreeRBXS_item_FROM_rbnode(node), tree->hashiter);
+			RETVAL= TreeRBXS_item_wrap_key(tree->hashiter->item);
+		}
+	OUTPUT:
+		RETVAL
+
+SV *
+NEXTKEY(tree, lastkey)
+	struct TreeRBXS *tree
+	SV *lastkey
+	CODE:
+		if (!tree->hashiter) // should never happen?
+			RETVAL= &PL_sv_undef;
+		else {
+			TreeRBXS_iter_advance(tree->hashiter, 1);
+			RETVAL= tree->hashiter->item? TreeRBXS_item_wrap_key(tree->hashiter->item)
+				: &PL_sv_undef;
+		}
+	OUTPUT:
+		RETVAL
+
+SV *
+SCALAR(tree)
+	struct TreeRBXS *tree
+	CODE:
+		RETVAL= newSViv(TreeRBXS_get_count(tree));
+	OUTPUT:
+		RETVAL
+
+void
+DELETE(tree, key)
+	struct TreeRBXS *tree
+	SV *key
+	INIT:
+		struct TreeRBXS_item stack_item, *item;
+		rbtree_node_t *first, *last, *node;
+	PPCODE:
+		if (!SvOK(key))
+			croak("Can't use undef as a key");
+		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
+		if (rbtree_find_all(
+			&tree->root_sentinel,
+			&stack_item,
+			(int(*)(void*,void*,void*)) tree->compare,
+			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+			&first, &last, NULL)
+		) {
+			ST(0)= sv_2mortal(SvREFCNT_inc(GET_TreeRBXS_item_FROM_rbnode(first)->value));
+			do {
+				item= GET_TreeRBXS_item_FROM_rbnode(first);
+				first= (first == last)? NULL : rbtree_node_next(first);
+				TreeRBXS_item_detach_tree(item, tree);
+			} while (first);
+		} else {
+			ST(0)= &PL_sv_undef;
+		}
 		XSRETURN(1);
 
 #-----------------------------------------------------------------------------
@@ -1664,7 +1747,7 @@ next(iter, count_sv= NULL)
 		Tree::RB::XS::Iter::next_values  = 2
 		Tree::RB::XS::Iter::next_kv      = 3
 	INIT:
-		size_t pos, n, i, tree_count= iter->tree->root_sentinel.left->count;
+		size_t pos, n, i, tree_count= TreeRBXS_get_count(iter->tree);
 		IV request;
 		rbtree_node_t *node;
 		rbtree_node_t *(*step)(rbtree_node_t *)= iter->reverse? &rbtree_node_prev : rbtree_node_next;
@@ -1739,7 +1822,21 @@ step(iter, ofs= 1)
 		RETVAL= !!iter->item;
 	OUTPUT:
 		RETVAL
-		
+
+void
+delete(iter)
+	struct TreeRBXS_iter *iter
+	PPCODE:
+		if (iter->item) {
+			// up the recnt temporarily to make sure it doesn't get lost when item gets freed
+			ST(0)= sv_2mortal(SvREFCNT_inc(iter->item->value));
+			// pruning the item automatically moves iterators to next, including this iterator.
+			TreeRBXS_item_detach_tree(iter->item, iter->tree);
+		}
+		else
+			ST(0)= &PL_sv_undef;
+		XSRETURN(1);
+
 #-----------------------------------------------------------------------------
 #  Constants
 #

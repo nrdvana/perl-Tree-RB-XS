@@ -171,4 +171,23 @@ subtest iter_get_multi => sub {
 	is( $tref, undef, 'tree freed' );
 };
 
+subtest iter_delete => sub {
+	my $tree= Tree::RB::XS->new;
+	weaken(my $tref= $tree);
+	$tree->put($_ => $_) for qw( 1 2 3 4 5 6 7 8 9 );
+	my $i;
+	for ($i= $tree->iter; !$i->done;) {
+		if ($i->key & 1) {
+			my $k= $i->key;
+			is( $i->delete, $k, "delete $k" );
+		} else {
+			$i->step;
+		}
+	}
+	is( [$tree->iter->next_keys('*')], [2,4,6,8], 'even numbers remaining' );
+	undef $i;
+	undef $tree;
+	is( $tref, undef, 'tree freed' );
+};
+
 done_testing;
