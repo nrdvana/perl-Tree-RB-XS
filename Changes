@@ -1,3 +1,14 @@
+Version 0.03 - 2011-11-18
+
+  - New XS iterators, with lots of new methods: clone, key, value, index,
+     tree, next_kv, next_keys, next_values, step, delete.
+  - Iterators now automatically move to the next item if the current node
+     gets removed from the tree.
+  - Iterators now hold a strong reference to the tree.
+  - TIEHASH interface, for those who want it.
+  - More unit tests, more documentation.
+  - Fixed compilation on 5.12, 5.10, 5.8 at the cost of correct UTF-8 cmp.
+
 Version 0.02 - 2021-11-15
 
   - New CMP_NUMSPLIT comparison function
