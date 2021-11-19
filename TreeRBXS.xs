@@ -1442,40 +1442,6 @@ root_node(tree)
 	OUTPUT:
 		RETVAL
 
-void
-_init_iter(tree, iter_sv, direction, item_sv=NULL)
-	struct TreeRBXS *tree
-	SV *iter_sv
-	int direction
-	SV *item_sv
-	INIT:
-		struct TreeRBXS_iter *iter= TreeRBXS_get_magic_iter(iter_sv, AUTOCREATE|OR_DIE);
-		struct TreeRBXS_item *item= item_sv && SvOK(item_sv)? TreeRBXS_get_magic_item(item_sv, OR_DIE) : NULL;
-		rbtree_node_t *node;
-	PPCODE:
-		if (iter->item || iter->tree)
-			croak("Iterator is already initialized");
-		iter->tree= tree;
-		iter->reverse= direction == 1? 0 : 1;
-		if (tree->owner)
-			SvREFCNT_inc(tree->owner);
-		if (!item) {
-			if (TreeRBXS_get_count(tree) == 0)
-				node= NULL;
-			else if (direction == 1)
-				node= rbtree_node_left_leaf(TreeRBXS_get_root(tree));
-			else if (direction == -1)
-				node= rbtree_node_right_leaf(TreeRBXS_get_root(tree));
-			else
-				croak("Unhandled 'direction' %d", direction);
-			if (node)
-				item= GET_TreeRBXS_item_FROM_rbnode(node);
-		}
-		if (item)
-			TreeRBXS_item_attach_iter(item, iter);
-		ST(0)= iter_sv;
-		XSRETURN(1);
-
 SV *
 FIRSTKEY(tree)
 	struct TreeRBXS *tree
@@ -1694,6 +1660,50 @@ prune(item)
 #
 
 MODULE = Tree::RB::XS              PACKAGE = Tree::RB::XS::Iter
+
+void
+_init(iter_sv, target, direction= 1)
+	SV *iter_sv
+	SV *target
+	IV direction
+	INIT:
+		struct TreeRBXS_iter *iter2, *iter= TreeRBXS_get_magic_iter(iter_sv, AUTOCREATE|OR_DIE);
+		struct TreeRBXS *tree;
+		struct TreeRBXS_item *item= NULL;
+		rbtree_node_t *node= NULL;
+	PPCODE:
+		if (iter->item || iter->tree)
+			croak("Iterator is already initialized");
+		if (!(direction == 1 || direction == -1))
+			croak("Direction must be 1 or -1");
+		iter->reverse= (direction == -1);
+
+		// target can be a tree, a node, or another iterator
+		if ((iter2= TreeRBXS_get_magic_iter(target, 0))) {
+			// use this direction unless overridden
+			if (items < 2) iter->reverse= iter2->reverse;
+			tree= iter2->tree;
+			item= iter2->item;
+		}
+		else if ((item= TreeRBXS_get_magic_item(target, 0))) {
+			tree= TreeRBXS_item_get_tree(item);
+		}
+		else if ((tree= TreeRBXS_get_magic_tree(target, 0))) {
+			node= !TreeRBXS_get_count(tree)? NULL
+				: iter->reverse? rbtree_node_right_leaf(TreeRBXS_get_root(tree))
+				: rbtree_node_left_leaf(TreeRBXS_get_root(tree));
+			if (node)
+				item= GET_TreeRBXS_item_FROM_rbnode(node);
+		}
+		if (!tree)
+			croak("Can't iterate a node that isn't in the tree");
+		iter->tree= tree;
+		if (tree->owner)
+			SvREFCNT_inc(tree->owner);
+		if (item)
+			TreeRBXS_item_attach_iter(item, iter);
+		ST(0)= iter_sv;
+		XSRETURN(1);
 
 SV *
 key(iter)
