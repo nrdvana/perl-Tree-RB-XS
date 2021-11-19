@@ -330,7 +330,7 @@ static void TreeRBXS_init_tmp_item(struct TreeRBXS_item *item, struct TreeRBXS *
 static struct TreeRBXS_item * TreeRBXS_new_item_from_tmp_item(struct TreeRBXS_item *src) {
 	struct TreeRBXS_item *dst;
 	size_t len;
-	/* If the item references a string that is nor managed by a SV,
+	/* If the item references a string that is not managed by a SV,
 	  copy that into the space at the end of the allocated block. */
 	if (src->key_type == KEY_TYPE_USTR || src->key_type == KEY_TYPE_BSTR) {
 		len= src->ckeylen;
@@ -608,43 +608,59 @@ static int TreeRBXS_cmp_float(struct TreeRBXS *tree, struct TreeRBXS_item *a, st
 	return diff < 0? -1 : diff > 0? 1 : 0;
 }
 
-// Compare C strings using memcmp, on raw byte values.  This isn't correct for UTF-8 but is a tradeoff for speed.
+// Compare C strings using memcmp, on raw byte values.  The strings have been pre-processed to
+// be comparable with memcmp, by case-folding, or making sure both are UTF-8, etc.
 static int TreeRBXS_cmp_memcmp(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
 	size_t alen= a->ckeylen, blen= b->ckeylen;
 	int cmp= memcmp(a->keyunion.ckey, b->keyunion.ckey, alen < blen? alen : blen);
 	return cmp? cmp : alen < blen? -1 : alen > blen? 1 : 0;
 }
 
-#if PERL_VERSION_GE(5,14,0)
-static int TreeRBXS_cmp_utf8(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
-	return bytes_cmp_utf8(
-		(unsigned char*)a->keyunion.ckey, a->ckeylen,
-		(unsigned char*)b->keyunion.ckey, b->ckeylen
-	);
-}
-#endif
-
+//#define DEBUG_NUMSPLIT(args...) warn(args)
+#define DEBUG_NUMSPLIT(args...)
 static int TreeRBXS_cmp_numsplit(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
 	const char *apos, *alim, *amark;
 	const char *bpos, *blim, *bmark;
 	size_t alen, blen;
+	bool a_utf8= false, b_utf8= false;
 	int cmp;
 
 	switch (tree->key_type) {
 	case KEY_TYPE_USTR:
+		a_utf8= b_utf8= true;
 	case KEY_TYPE_BSTR:
 		apos= a->keyunion.ckey; alim= apos + a->ckeylen;
 		bpos= b->keyunion.ckey; blim= bpos + b->ckeylen;
 		break;
 	case KEY_TYPE_ANY:
 	case KEY_TYPE_CLAIM:
-		apos= SvPV(a->keyunion.svkey, alen); alim= apos + alen;
-		bpos= SvPV(b->keyunion.svkey, blen); blim= bpos + blen;
+#if PERL_VERSION_LT(5,14,0)
+		// before 5.14, need to force both to utf8 if either are utf8
+		if (SvUTF8(a->keyunion.svkey) || SvUTF8(b->keyunion.svkey)) {
+			apos= SvPVutf8(a->keyunion.svkey, alen);
+			bpos= SvPVutf8(b->keyunion.svkey, blen);
+			a_utf8= b_utf8= true;
+		} else
+#else
+		// After 5.14, can compare utf8 with bytes without converting the buffer
+		a_utf8= SvUTF8(a->keyunion.svkey);
+		b_utf8= SvUTF8(b->keyunion.svkey);
+#endif		
+		{
+			apos= SvPV(a->keyunion.svkey, alen);
+			bpos= SvPV(b->keyunion.svkey, blen);
+		}
+		alim= apos + alen;
+		blim= bpos + blen;
 		break;
 	default: croak("BUG");
 	}
 
+	DEBUG_NUMSPLIT("compare '%.*s' | '%.*s'", (int)(alim-apos), apos, (int)(blim-bpos), bpos);
 	while (apos < alim && bpos < blim) {
+		// Step forward as long as both strings are identical
+		while (apos < alim && bpos < blim && *apos == *bpos && !isdigit(*apos))
+			apos++, bpos++;
 		// find the next start of digits along the strings
 		amark= apos;
 		while (apos < alim && !isdigit(*apos)) apos++;
@@ -654,48 +670,61 @@ static int TreeRBXS_cmp_numsplit(struct TreeRBXS *tree, struct TreeRBXS_item *a,
 		blen= bpos - bmark;
 		// compare the non-digit portions found in each string
 		if (alen || blen) {
-			// If one of the non-digit spans was length=0, then we are comparing digits
+			// If one of the non-digit spans was length=0, then we are comparing digits (or EOF)
 			// with string, and digits sort first.
-			if (alen == 0) return -1;
-			if (blen == 0) return 1;
+			if (alen == 0) { DEBUG_NUMSPLIT("a EOF or digit, b has chars, -1"); return -1; }
+			if (blen == 0) { DEBUG_NUMSPLIT("b EOF or digit, a has chars, 1");  return  1; }
 			// else compare the portions in common.
 #if PERL_VERSION_GE(5,14,0)
-			if (tree->key_type != KEY_TYPE_BSTR) {
-				cmp= bytes_cmp_utf8((unsigned char*)amark, alen, (unsigned char*)bmark, blen);
-				if (cmp) return cmp;
+			if (a_utf8 != b_utf8) {
+				cmp= a_utf8? -bytes_cmp_utf8(bmark, blen, amark, alen)
+					: bytes_cmp_utf8(amark, alen, bmark, blen);
+				if (cmp) { DEBUG_NUMSPLIT("bytes_cmp_utf8('%.*s','%.*s')= %d", (int)alen, amark, (int)blen, bmark, cmp); return cmp; }
 			} else
 #endif
 			{
 				cmp= memcmp(amark, bmark, alen < blen? alen : blen);
-				if (cmp) return cmp;
-				if (alen < blen) return -1;
-				if (alen > blen) return -1;
+				if (cmp) { DEBUG_NUMSPLIT("memcmp('%.*s','%.*s') = %d", (int)alen, amark, (int)blen, bmark, cmp); return cmp; }
+				if (alen < blen) { DEBUG_NUMSPLIT("alen < blen = -1"); return -1; }
+				if (alen > blen) { DEBUG_NUMSPLIT("alen > blen = 1"); return -1; }
 			}
 		}
 		// If one of the strings ran out of characters, it is the lesser one.
 		if (!(apos < alim && bpos < blim)) break;
 		// compare the digit portions found in each string
-		// Find the start and end of nonzero digits in A
+		// Find the start of nonzero digits
 		while (apos < alim && *apos == '0') apos++;
-		amark= apos;
-		while (apos < alim && isdigit(*apos)) apos++;
-		// Find the start and end of nonzero digits in B
 		while (bpos < blim && *bpos == '0') bpos++;
+		amark= apos;
 		bmark= bpos;
-		while (bpos < blim && isdigit(*bpos)) bpos++;
-		// Whichever number is longr is greater
-		alen= apos - amark;
-		blen= bpos - bmark;
-		if (alen < blen) return -1;
-		if (alen > blen) return 1;
-		// Else they're the same length, so strcmp to find the winner.
-		cmp= memcmp(amark, bmark, alen);
-		if (cmp) return cmp;
+		// find the first differing digit
+		while (apos < alim && bpos < blim && *apos == *bpos && isdigit(*apos))
+			apos++, bpos++;
+		// If there are more digits to consider beyond the first mismatch (or EOF) then need to
+		// find the end of the digits and see which number was longer.
+		if ((apos < alim && isdigit(*apos)) || (bpos < blim && isdigit(*bpos))) {
+			if (apos == alim) { DEBUG_NUMSPLIT("b has more digits = -1"); return -1; }
+			if (bpos == blim) { DEBUG_NUMSPLIT("a has more digits = 1"); return 1; }
+			// If the strings happen to be the same length, this will be the deciding character
+			cmp= *apos - *bpos;
+			// find the end of digits
+			while (apos < alim && isdigit(*apos)) apos++;
+			while (bpos < blim && isdigit(*bpos)) bpos++;
+			// Whichever number is longer is greater
+			alen= apos - amark;
+			blen= bpos - bmark;
+			if (alen < blen) { DEBUG_NUMSPLIT("b numerically greater = -1"); return -1; }
+			if (alen > blen) { DEBUG_NUMSPLIT("a numerically greater = 1"); return 1; }
+			// Else they're the same length, and the 'cmp' captured earlier is the answer.
+			DEBUG_NUMSPLIT("%.*s <=> %.*s = %d", (int)alen, amark, (int)blen, bmark, cmp);
+			return cmp;
+		}
 		// Else they're equal, continue to the next component.
 	}
 	// One or both of the strings ran out of characters
-	if (bpos < blim) return -1;
-	if (apos < alim) return 1;
+	if (bpos < blim) { DEBUG_NUMSPLIT("b is longer '%.*s' = -1", (int)(blim-bpos), bpos); return -1; }
+	if (apos < alim) { DEBUG_NUMSPLIT("a is longer '%.*s' = 1", (int)(alim-apos), apos); return 1; }
+	DEBUG_NUMSPLIT("identical");
 	return 0;
 }
 
@@ -1006,11 +1035,6 @@ _init_tree(obj, key_type_sv, compare_fn)
 			      : key_type == KEY_TYPE_CLAIM? CMP_PERL
 			      : CMP_PERL;
 		}
-#if PERL_VERSION_LT(5,14,0)
-		if (key_type == KEY_TYPE_USTR) key_type= KEY_TYPE_ANY;
-		if (cmp_id == CMP_UTF8) cmp_id= CMP_PERL;
-#endif
-		
 		tree= TreeRBXS_get_magic_tree(obj, AUTOCREATE|OR_DIE);
 		if (tree->owner != SvRV(obj))
 			croak("Tree is already initialized");
@@ -1025,11 +1049,9 @@ _init_tree(obj, key_type_sv, compare_fn)
 			tree->compare= TreeRBXS_cmp_perl_cb;
 			break;
 		case CMP_UTF8:
-#if PERL_VERSION_GE(5,14,0)
 			tree->key_type= KEY_TYPE_USTR;
-			tree->compare= TreeRBXS_cmp_utf8;
+			tree->compare= TreeRBXS_cmp_memcmp;
 			break;
-#endif
 		case CMP_PERL:
 			tree->key_type= key_type == KEY_TYPE_CLAIM? key_type : KEY_TYPE_ANY;
 			tree->compare= TreeRBXS_cmp_perl;
@@ -1499,6 +1521,7 @@ NEXTKEY(tree, lastkey)
 			RETVAL= tree->hashiter->item? TreeRBXS_item_wrap_key(tree->hashiter->item)
 				: &PL_sv_undef;
 		}
+		(void)lastkey;
 	OUTPUT:
 		RETVAL
 
@@ -1516,7 +1539,7 @@ DELETE(tree, key)
 	SV *key
 	INIT:
 		struct TreeRBXS_item stack_item, *item;
-		rbtree_node_t *first, *last, *node;
+		rbtree_node_t *first, *last;
 	PPCODE:
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
