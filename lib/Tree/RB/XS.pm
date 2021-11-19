@@ -639,15 +639,47 @@ This class implements the required methods needed for C<tie>:
   $hash{$_}= $_ for 1..10;
   delete $hash{3};
   $_ += 1 for values %hash;
+  tied(%hash)->hseek(5);
+  say each %hash;  # 5
 
 But you get better performance by using the tree's API directly.  This should only be used when
 you need to integrate with code that isn't aware of the tree.
+
+=over
+
+=item hseek
+
+  tied(%hash)->hseek( $key );
+             ->hseek({ -reverse => $bool });
+             ->hseek( $key, { -reverse => $bool });
+
+This is a method of the tree, but only relevant to the tied hash interface.  It controls the
+behavior of the next call to C<< each %hash >> or C<< keys %hash >>, causing the first element
+to be the node at or after the C<$key>.  (or before, if you change to a reverse iterator)
+
+This method differs from L<Tree::RB/hseek> in that C<Tree::RB> will change the logical first
+node of the iteration *indefinitely* such that repeated calls to C<keys> do not see any element
+less than C<$key>.  This C<hseek> only applies to the next iteration.  (which I'm guessing was
+th intent in Tree::RB?)
+
+=back
 
 =cut
 
 *TIEHASH= *new;
 *STORE= *put;
 *CLEAR= *clear;
+
+sub hseek {
+	my ($self, $key, $opts)= @_;
+	if (@_ == 2 && ref $key eq 'HASH') {
+		$opts= $key;
+		$key= $opts->{'-key'};
+	}
+	my $reverse= $opts && $opts->{'-reverse'} || 0;
+	my $node= defined $key? $self->get_node($key, $reverse? GET_LE_LAST() : GET_GE()) : undef;
+	$self->_set_hashiter($node, $reverse);
+}
 
 =head1 EXPORTS
 

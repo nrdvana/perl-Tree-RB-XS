@@ -207,7 +207,13 @@ struct TreeRBXS {
 	rbtree_node_t root_sentinel;   // parent-of-root, used by rbtree implementation.
 	rbtree_node_t leaf_sentinel;   // dummy node used by rbtree implementation.
 	struct TreeRBXS_iter *hashiter;// iterator used for TIEHASH
+	bool hashiterset;              // true if the hashiter has been set manually with hseek
 };
+
+static void TreeRBXS_assert_structure(struct TreeRBXS *tree);
+struct TreeRBXS_iter * TreeRBXS_get_hashiter(struct TreeRBXS *tree);
+static struct TreeRBXS_item *TreeRBXS_find_item(struct TreeRBXS *tree, struct TreeRBXS_item *key, int mode);
+static void TreeRBXS_destroy(struct TreeRBXS *tree);
 
 #define TreeRBXS_get_root(tree) ((tree)->root_sentinel.left)
 #define TreeRBXS_get_count(tree) ((tree)->root_sentinel.left->count)
@@ -243,6 +249,14 @@ struct TreeRBXS_item {
 	char extra[];
 };
 
+static void TreeRBXS_init_tmp_item(struct TreeRBXS_item *item, struct TreeRBXS *tree, SV *key, SV *value);
+static struct TreeRBXS_item * TreeRBXS_new_item_from_tmp_item(struct TreeRBXS_item *src);
+static struct TreeRBXS* TreeRBXS_item_get_tree(struct TreeRBXS_item *item);
+static void TreeRBXS_item_advance_all_iters(struct TreeRBXS_item* item);
+static void TreeRBXS_item_detach_iter(struct TreeRBXS_item *item, struct TreeRBXS_iter *iter);
+static void TreeRBXS_item_detach_owner(struct TreeRBXS_item* item);
+static void TreeRBXS_item_free(struct TreeRBXS_item *item);
+
 struct TreeRBXS_iter {
 	struct TreeRBXS *tree;
 	SV *owner;
@@ -250,6 +264,11 @@ struct TreeRBXS_iter {
 	struct TreeRBXS_item *item;
 	int reverse;
 };
+
+static void TreeRBXS_iter_rewind(struct TreeRBXS_iter *iter);
+static void TreeRBXS_iter_set_item(struct TreeRBXS_iter *iter, struct TreeRBXS_item *item);
+static void TreeRBXS_iter_advance(struct TreeRBXS_iter *iter, IV ofs);
+static void TreeRBXS_iter_free(struct TreeRBXS_iter *iter);
 
 static void TreeRBXS_assert_structure(struct TreeRBXS *tree) {
 	int err;
@@ -283,6 +302,15 @@ static void TreeRBXS_assert_structure(struct TreeRBXS *tree) {
 		}
 	}
 	//warn("Tree is healthy");
+}
+
+struct TreeRBXS_iter * TreeRBXS_get_hashiter(struct TreeRBXS *tree) {
+	// This iterator is owned by the tree.  All other iterators would hold a reference to the tree.
+	if (!tree->hashiter) {
+		Newxz(tree->hashiter, 1, struct TreeRBXS_iter);
+		tree->hashiter->tree= tree;
+	}
+	return tree->hashiter;
 }
 
 /* For insert/put, there needs to be a node created before it can be
@@ -390,24 +418,43 @@ static void TreeRBXS_item_detach_owner(struct TreeRBXS_item* item) {
 		TreeRBXS_item_free(item);
 }
 
-static void TreeRBXS_item_attach_iter(struct TreeRBXS_item *item, struct TreeRBXS_iter *iter) {
-	iter->item= item;
-	// linked-list insert
-	iter->next_iter= item->iter;
-	item->iter= iter;
-}
-
 static void TreeRBXS_item_detach_iter(struct TreeRBXS_item *item, struct TreeRBXS_iter *iter) {
 	struct TreeRBXS_iter **cur;
 
 	// Linked-list remove
-	for (cur= &item->iter; *cur && *cur != iter; cur= &((*cur)->next_iter));
-	if (*cur)
-		*cur= iter->next_iter;
-	else
-		warn("BUG: iterator not found in item's linked list");
-	iter->item= NULL;
-	iter->next_iter= NULL;
+	for (cur= &item->iter; *cur; cur= &((*cur)->next_iter)) {
+		if (*cur == iter) {
+			*cur= iter->next_iter;
+			iter->next_iter= NULL;
+			iter->item= NULL;
+			return;
+		}
+	}
+	croak("BUG: iterator not found in item's linked list");
+}
+
+static void TreeRBXS_iter_rewind(struct TreeRBXS_iter *iter) {
+	rbtree_node_t *node= iter->reverse
+		? rbtree_node_right_leaf(TreeRBXS_get_root(iter->tree))
+		: rbtree_node_left_leaf(TreeRBXS_get_root(iter->tree));
+	TreeRBXS_iter_set_item(iter, node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL);
+}
+
+static void TreeRBXS_iter_set_item(struct TreeRBXS_iter *iter, struct TreeRBXS_item *item) {
+	struct TreeRBXS_iter **cur;
+
+	if (iter->item == item)
+		return;
+
+	if (iter->item)
+		TreeRBXS_item_detach_iter(iter->item, iter);
+
+	if (item) {
+		iter->item= item;
+		// linked-list insert
+		iter->next_iter= item->iter;
+		item->iter= iter;
+	}
 }
 
 static void TreeRBXS_iter_advance(struct TreeRBXS_iter *iter, IV ofs) {
@@ -421,9 +468,7 @@ static void TreeRBXS_iter_advance(struct TreeRBXS_iter *iter, IV ofs) {
 		if (iter->item) {
 			node= &iter->item->rbnode;
 			node= iter->reverse? rbtree_node_prev(node) : rbtree_node_next(node);
-			TreeRBXS_item_detach_iter(iter->item, iter);
-			if (node)
-				TreeRBXS_item_attach_iter(GET_TreeRBXS_item_FROM_rbnode(node), iter);
+			TreeRBXS_iter_set_item(iter, node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL);
 		}
 		// nothing to do at end of iteration
 	}
@@ -448,10 +493,7 @@ static void TreeRBXS_iter_advance(struct TreeRBXS_iter *iter, IV ofs) {
 		// swap back for reverse iterators
 		if (iter->reverse) newpos= cnt - 1 - newpos;
 		node= rbtree_node_child_at_index(TreeRBXS_get_root(iter->tree), (size_t)newpos);
-		if (iter->item)
-			TreeRBXS_item_detach_iter(iter->item, iter);
-		if (node)
-			TreeRBXS_item_attach_iter(GET_TreeRBXS_item_FROM_rbnode(node), iter);
+		TreeRBXS_iter_set_item(iter, node? GET_TreeRBXS_item_FROM_rbnode(node) : NULL);
 	}
 }
 
@@ -1491,21 +1533,14 @@ SV *
 FIRSTKEY(tree)
 	struct TreeRBXS *tree
 	INIT:
-		rbtree_node_t *node= rbtree_node_left_leaf(TreeRBXS_get_root(tree));
+		struct TreeRBXS_iter *iter= TreeRBXS_get_hashiter(tree);
+		rbtree_node_t *node;
 	CODE:
-		if (!node)
-			RETVAL= &PL_sv_undef;
-		else {
-			// This iterator is owned by the tree.  All other iterators would hold a reference to the tree.
-			if (!tree->hashiter) {
-				Newxz(tree->hashiter, 1, struct TreeRBXS_iter);
-				tree->hashiter->tree= tree;
-			}
-			if (tree->hashiter->item)
-				TreeRBXS_item_detach_iter(tree->hashiter->item, tree->hashiter);
-			TreeRBXS_item_attach_iter(GET_TreeRBXS_item_FROM_rbnode(node), tree->hashiter);
-			RETVAL= TreeRBXS_item_wrap_key(tree->hashiter->item);
-		}
+		if (tree->hashiterset)
+			tree->hashiterset= false; // iter has 'hseek' applied, don't change it
+		else
+			TreeRBXS_iter_rewind(iter);
+		RETVAL= TreeRBXS_item_wrap_key(iter->item); // handles null by returning undef
 	OUTPUT:
 		RETVAL
 
@@ -1513,17 +1548,34 @@ SV *
 NEXTKEY(tree, lastkey)
 	struct TreeRBXS *tree
 	SV *lastkey
+	INIT:
+		struct TreeRBXS_iter *iter= TreeRBXS_get_hashiter(tree);
 	CODE:
-		if (!tree->hashiter) // should never happen?
-			RETVAL= &PL_sv_undef;
-		else {
-			TreeRBXS_iter_advance(tree->hashiter, 1);
-			RETVAL= tree->hashiter->item? TreeRBXS_item_wrap_key(tree->hashiter->item)
-				: &PL_sv_undef;
-		}
+		if (tree->hashiterset)
+			tree->hashiterset= false; // iter has 'hseek' applied, don't change it
+		else
+			TreeRBXS_iter_advance(iter, 1);
+		RETVAL= TreeRBXS_item_wrap_key(iter->item);
 		(void)lastkey;
 	OUTPUT:
 		RETVAL
+
+void
+_set_hashiter(tree, item_sv, reverse)
+	struct TreeRBXS *tree
+	SV *item_sv
+	bool reverse
+	INIT:
+		struct TreeRBXS_item *item= TreeRBXS_get_magic_item(item_sv, 0);
+		struct TreeRBXS_iter *iter= TreeRBXS_get_hashiter(tree);
+	PPCODE:
+		if (item && (TreeRBXS_item_get_tree(item) != tree))
+			croak("Node is not part of this tree");
+		iter->reverse= reverse;
+		TreeRBXS_iter_set_item(iter, item);
+		if (!item) TreeRBXS_iter_rewind(iter);
+		tree->hashiterset= true;
+		XSRETURN(0);
 
 SV *
 SCALAR(tree)
@@ -1746,8 +1798,7 @@ _init(iter_sv, target, direction= 1)
 		iter->tree= tree;
 		if (tree->owner)
 			SvREFCNT_inc(tree->owner);
-		if (item)
-			TreeRBXS_item_attach_iter(item, iter);
+		TreeRBXS_iter_set_item(iter, item);
 		ST(0)= iter_sv;
 		XSRETURN(1);
 
