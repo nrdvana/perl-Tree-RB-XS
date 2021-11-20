@@ -84,7 +84,9 @@ my %tests= (
 	sort_keys => {
 		num       => 'my %hash; $hash{$_}= undef for @collection; ($min)= sort { $a <=> $b } keys %hash;',
 		str       => 'my %hash; $hash{$_}= undef for @collection; ($min)= sort keys %hash;',
-		obj       => 'sub key_to_str { $_->{key} } my %hash; $hash{key_to_str($_)}= $_ for @collection; ($min)= $hash{(sort keys %hash)[0]};',
+		# hash keys can't be objects.  The closest option would be to just put the key's inner string as the hash key,
+		# but that would just be a repeat of the 'str' test.
+		obj       => undef,
 	},
 	tree_rb   => {
 		use       => 'use Tree::RB;',
@@ -125,6 +127,7 @@ for my $type (@ARGV? @ARGV : qw( int float shortstr longstr commonstr ustr obj )
 			next;
 		}
 		my $setup= ( $t->{use} || '' ) . ($setup{$type} // die "Unsupported type $type");
+		next exists $t->{$type} && !defined $t->{$type};
 		my $body= $t->{$type} || ($type =~ /str/? $t->{str} : $t->{num});
 		my $script= make_script($setup, $body, 1);
 		for (1..$iterations) {

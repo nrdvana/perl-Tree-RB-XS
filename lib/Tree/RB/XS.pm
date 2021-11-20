@@ -842,4 +842,28 @@ Has alias C<LUPREV> to match Tree::RB.
 *LUPREV=  *GET_PREV;
 *LUNEXT=  *GET_NEXT;
 
+=head1 SEE ALSO
+
+=over
+
+=item L<Tree::RB>
+
+The Red/Black module this one used as API inspiration.  The fastest pure-perl tree module on
+CPAN.  Implemented as blessed arrayrefs.
+
+=item L<AVLTree>
+
+Another XS-based tree module.  About 6%-70% slower than this one depending on whether you use
+coderef comparisons or optimized comparisons.
+
+=item L<Tree::AVL>
+
+An AVL tree implementation in pure perl.  The API is perhaps more convenient, with the ability
+to add your object to the tree with a callback that derives the key from that object.
+However, it runs significantly slower than Tree::RB.
+
+=back
+
+=cut
+
 1;
