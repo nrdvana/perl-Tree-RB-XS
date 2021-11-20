@@ -79,9 +79,9 @@ sub write_api {
 typedef struct ${ns}node {
 	struct ${ns}node *left, *right, *parent;
 	size_t color: 1;
-#if SIZE_MAX == 0xFFFF
+#if SIZE_MAX <= 0xFFFF
 	size_t count: 15;
-#elif SIZE_MAX == 0xFFFFFFFF
+#elif SIZE_MAX <= 0xFFFFFFFF
 	size_t count: 31;
 #else
 	size_t count: 63;
