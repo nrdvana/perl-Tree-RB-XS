@@ -59,8 +59,8 @@ END
 			for 1..$n;
 END
 	commonstr => <<'END',
-		my @collection;
-		push @collection, join(q||, rand, rand)
+		my @collection; my $x= q||.rand;
+		push @collection, join(q||, $x, rand)
 			for 1..$n;
 END
 	ustr => <<'END',
@@ -75,15 +75,17 @@ END
 			for shuffle 1..$n;
 END
 );
-my %tests= (
-	sort => {
-		num       => '($min)= sort { $a <=> $b } @collection;',
-		str       => '($min)= sort @collection;',
-		obj       => '($min)= sort { $a->{key} <=> $b->{key} } @collection;',
-	},
-	sort_keys => {
-		num       => 'my %hash; $hash{$_}= undef for @collection; ($min)= sort { $a <=> $b } keys %hash;',
-		str       => 'my %hash; $hash{$_}= undef for @collection; ($min)= sort keys %hash;',
+my %min_tests= (
+	#min => {
+	#	use       => 'use List::Util qw|min minstr|;',
+	#	num       => '$min= min @collection;',
+	#	str       => '$min= minstr @collection;',
+	#	obj       => '$min= reduce { $a->{key} < $b->{key}? $a : $b } @collection;',
+	#},
+	min_keys => {
+		use       => 'use List::Util qw|min minstr|;',
+		num       => 'my %hash; $hash{$_}= undef for @collection; $min= min keys %hash;',
+		str       => 'my %hash; $hash{$_}= undef for @collection; $min= minstr keys %hash;',
 		# hash keys can't be objects.  The closest option would be to just put the key's inner string as the hash key,
 		# but that would just be a repeat of the 'str' test.
 		obj       => undef,
@@ -120,14 +122,14 @@ my %tests= (
 $|= 1;
 for my $type (@ARGV? @ARGV : qw( int float shortstr longstr commonstr ustr obj )) {
 	my %result;
-	for my $name (sort keys %tests) {
-		my $t= $tests{$name};
+	for my $name (sort keys %min_tests) {
+		my $t= $min_tests{$name};
 		if ($t->{use} && !eval "$t->{use}; 1") {
 			warn "$name is not available\n";
 			next;
 		}
 		my $setup= ( $t->{use} || '' ) . ($setup{$type} // die "Unsupported type $type");
-		next exists $t->{$type} && !defined $t->{$type};
+		next if exists $t->{$type} && !defined $t->{$type};
 		my $body= $t->{$type} || ($type =~ /str/? $t->{str} : $t->{num});
 		my $script= make_script($setup, $body, 1);
 		for (1..$iterations) {
