@@ -1,7 +1,9 @@
-Version 0.04 - 2021-11-19
+Version 0.05 - 2021-11-20
 
   - Implement hseek
   - Fix more bugs in utf8 comparisons (should be really fixed this time)
+  - Fix compilation on 32-bit platforms
+  - util/benchmark.pl compares performance with other similar modules
 
 Version 0.03 - 2021-11-18
 
