@@ -2,6 +2,7 @@ package RBGen;
 use strict;
 use warnings;
 use Carp;
+use Config;
 our $VERSION= '0.1';
 
 =head1 SYNOPSIS
@@ -52,6 +53,8 @@ sub with_check    { defined $_[0]{with_check}?  $_[0]{with_check} : 1 }
 sub with_cmp_ctx  { defined $_[0]{with_cmp_ctx}?$_[0]{with_cmp_ctx} : 1 }
 sub use_typedefs  { $_[0]{use_typedefs} }
 sub timestamp     { my @t= gmtime; sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ", $t[5]+1900, @t[4,3,2,1,0] }
+sub size_type     { $_[0]{size_type} ||= $Config{sizetype} }
+sub size_size     { $_[0]{size_size} ||= $Config{sizesize} }
 
 sub write_api {
 	my ($self, $dest)= @_;
@@ -78,14 +81,7 @@ sub write_api {
  */
 typedef struct ${ns}node {
 	struct ${ns}node *left, *right, *parent;
-	size_t color: 1;
-#if SIZE_MAX <= 0xFFFF
-	size_t count: 15;
-#elif SIZE_MAX <= 0xFFFFFFFF
-	size_t count: 31;
-#else
-	size_t count: 63;
-#endif
+	@{[ $self->size_type ]} color: 1, count: @{[ $self->size_size * 8 - 1 ]};
 } $nd;
 
 typedef int (*${ns}compare_fn)(${cmp_ctx_decl}void *a, void *b);
