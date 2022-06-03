@@ -6,6 +6,7 @@ package Tree::RB::XS;
 use strict;
 use warnings;
 use Carp;
+use Scalar::Util ();
 require XSLoader;
 XSLoader::load('Tree::RB::XS', $Tree::RB::XS::VERSION);
 use Exporter 'import';
@@ -100,7 +101,7 @@ independent from a tree.
 
 =item *
 
-Many functions have official names changed, but aliases are provided for compatibility.
+Many methods have official names changed, but aliases are provided for compatibility.
 
 =back
 
