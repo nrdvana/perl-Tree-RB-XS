@@ -74,7 +74,7 @@ typedef int TreeRBXS_cmp_fn(struct TreeRBXS *tree, struct TreeRBXS_item *a, stru
 static TreeRBXS_cmp_fn TreeRBXS_cmp_int;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_float;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_memcmp;
-static TreeRBXS_cmp_fn TreeRBXS_cmp_utf8;
+//static TreeRBXS_cmp_fn TreeRBXS_cmp_utf8;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_numsplit;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_perl;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_perl_cb;
@@ -458,7 +458,7 @@ static void TreeRBXS_item_detach_iter(struct TreeRBXS_item *item, struct TreeRBX
 static void TreeRBXS_iter_rewind(struct TreeRBXS_iter *iter) {
 	struct TreeRBXS *tree= iter->tree;
 	struct TreeRBXS_item *item;
-	rbtree_node_t *node, *root;
+	rbtree_node_t *root;
 	if (iter->recent) {
 		item= iter->reverse? tree->recent_newest : tree->recent_oldest;
 	}
@@ -475,8 +475,6 @@ static void TreeRBXS_iter_rewind(struct TreeRBXS_iter *iter) {
 /* Point an iterator at a new item, or NULL.
  */
 static void TreeRBXS_iter_set_item(struct TreeRBXS_iter *iter, struct TreeRBXS_item *item) {
-	struct TreeRBXS_iter **cur;
-
 	if (iter->item == item)
 		return;
 
@@ -762,12 +760,14 @@ static void TreeRBXS_recent_touch(struct TreeRBXS *tree, struct TreeRBXS_item *i
 static void TreeRBXS_recent_cancel(struct TreeRBXS *tree, struct TreeRBXS_item *item) {
 	if (item->recent_older_p) {
 		*item->recent_older_p= item->recent_newer;
-		item->recent_newer->recent_older_p= item->recent_older_p;
-		item->recent_older_p= NULL;
-		if (item->recent_newer == NULL)
-			tree->recent_newest= NULL;
-		else
+		if (item->recent_newer) {
+			item->recent_newer->recent_older_p= item->recent_older_p;
 			item->recent_newer= NULL;
+		} else {
+			tree->recent_newest= (item->recent_older_p == &tree->recent_oldest)? NULL
+				: GET_TreeRBXS_item_FROM_recent_newer(item->recent_older_p);
+		}
+		item->recent_older_p= NULL;
 		--tree->recent_count;
 	}
 }
@@ -863,8 +863,8 @@ static int TreeRBXS_cmp_numsplit(struct TreeRBXS *tree, struct TreeRBXS_item *a,
 			// else compare the portions in common.
 #if PERL_VERSION_GE(5,14,0)
 			if (a_utf8 != b_utf8) {
-				cmp= a_utf8? -bytes_cmp_utf8(bmark, blen, amark, alen)
-					: bytes_cmp_utf8(amark, alen, bmark, blen);
+				cmp= a_utf8? -bytes_cmp_utf8((const U8*) bmark, blen, (const U8*) amark, alen)
+					: bytes_cmp_utf8((const U8*) amark, alen, (const U8*) bmark, blen);
 				if (cmp) { DEBUG_NUMSPLIT("bytes_cmp_utf8('%.*s','%.*s')= %d", (int)alen, amark, (int)blen, bmark, cmp); return cmp; }
 			} else
 #endif
@@ -1752,7 +1752,6 @@ FIRSTKEY(tree)
 	struct TreeRBXS *tree
 	INIT:
 		struct TreeRBXS_iter *iter= TreeRBXS_get_hashiter(tree);
-		rbtree_node_t *node;
 	CODE:
 		if (tree->hashiterset)
 			tree->hashiterset= false; // iter has 'hseek' applied, don't change it
@@ -2026,11 +2025,10 @@ mark_newest(item)
 MODULE = Tree::RB::XS              PACKAGE = Tree::RB::XS::Iter
 
 void
-_init(iter_sv, target, direction= 1, recent=0)
+_init(iter_sv, target, direction= 1)
 	SV *iter_sv
 	SV *target
 	IV direction
-	bool recent
 	INIT:
 		struct TreeRBXS_iter *iter2, *iter= TreeRBXS_get_magic_iter(iter_sv, AUTOCREATE|OR_DIE);
 		struct TreeRBXS *tree;
@@ -2130,7 +2128,9 @@ next(iter, count_sv= NULL)
 	SV* count_sv
 	ALIAS:
 		Tree::RB::XS::Iter::next         = 0
+		Tree::RB::XS::Iter::next_key     = 1
 		Tree::RB::XS::Iter::next_keys    = 1
+		Tree::RB::XS::Iter::next_value   = 2
 		Tree::RB::XS::Iter::next_values  = 2
 		Tree::RB::XS::Iter::next_kv      = 3
 	INIT:

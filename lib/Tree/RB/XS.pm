@@ -118,30 +118,33 @@ Options:
 
 =over
 
-=item L</compare_fn>
+=item *
+
+C<compare_fn>
 
 Choose a custom key-compare function.  This can be the ID of an optimized function,
 a coderef, or the name of one of the optimized IDs like "int" for C<CMP_INT>.
 See below for details.
 
-=item L</allow_duplicates>
+=item *
+
+C<allow_duplicates>
 
 Whether to allow two nodes with the same key.  Defaults to false.
 
-=item L</compat_list_get>
+=item *
+
+C<compat_list_get>
 
 Whether to enable full compatibility with L<Tree::RB>'s list-context behavior for L</get>.
 Defaults to false.
 
-=item L</track_recent>
+=item *
+
+C<track_recent>
 
 Whether to keep track of the insertion order of nodes, by default.  Defaults to false.
 You may toggle this attribute after construction.
-
-=item L</key_type>
-
-This is an internal detail that probably shouldn't have been exposed, and might be removed
-in the future.  Choose one of the optimized C<compare_fn> instead.
 
 =back
 
@@ -205,8 +208,9 @@ with related methods.  Note that each node can be tracked or un-tracked individu
 setting just changes the default for new nodes.  This allows you to differentiate more permanent
 data points vs. temporary ones that you might want to expire over time.
 
-See also: L</oldest>, L</newest>, L</recent_count>, L</iter_old_to_new>, L</iter_new_to_old>,
-L</truncate_recent>, and Node method L</mark_newest>.
+See also: L</oldest_node>, L</newest_node>, L</recent_count>, L</iter_newer>, L</iter_older>,
+L</truncate_recent>, and Node methods L</newer>, L</older>, L</mark_newest>,
+and L</recent_tracked>.
 
 =head2 key_type
 
@@ -246,6 +250,20 @@ Get the Nth node in the sequence from min to max.  N is a zero-based index.
 You may use negative numbers to count down form max.
 
 Alias: C<nth>
+
+=head2 oldest_node
+
+The earliest node that was inserted with L</track_recent> enabled/applied.
+C<undef> if no nodes have insertion-order tracking.
+
+Alias: C<oldest>
+
+=head2 newest_node
+
+The most recent node that was inserted with L</track_recent> enabled/applied.
+C<undef> if no nodes have insertion-order tracking.
+
+Alias: C<newest>
 
 =cut
 
@@ -378,12 +396,12 @@ or from the key or node you provide up to max.
 Like C<iter>, but the C<< ->next >> and C<< ->step >> methods walk backward to smaller key
 values, and the default C<$get_mode> is L</GET_LE_LAST>.
 
-=head2 iter_old_to_new
+=head2 iter_newer
 
 Return an iterator that iterates the insertion-order from oldest to newest.  This only iterates
 nodes with insertion-order tracking enabled.  See L</track_recent>.
 
-=head2 iter_new_to_old
+=head2 iter_older
 
 Return an iterator that iterates the insertion-order from newest to oldest.  This only iterates
 nodes with insertion-order tracking enabled.  See L</track_recent>.
@@ -404,12 +422,12 @@ sub rev_iter {
 	Tree::RB::XS::Iter->_new($key_or_node || $self, -1);
 }
 
-sub iter_old_to_new {
+sub iter_newer {
 	my ($self, $node)= @_;
 	Tree::RB::XS::Iter->_new($node || $self, 2);
 }
 
-sub iter_new_to_old {
+sub iter_older {
 	my ($self, $node)= @_;
 	Tree::RB::XS::Iter->_new($node || $self, -2);
 }
@@ -639,16 +657,16 @@ It will also return an empty list at the end of the sequence instead of returnin
 You can use the string C<'*'> for the count to indicate all the rest of the nodes in the
 sequence.
 
-=item next_keys
+=item next_key
 
 Same as C<next>, but return the keys of the nodes.
 
-=item next_values
+=item next_value
 
 Same as C<next>, but return the values of the nodes.  Like L</value>, these are also aliases,
 and can be modified.
 
-  $_++ for $iter->next_values('*');
+  $_++ for $iter->next_value('*');
 
 =item next_kv
 
