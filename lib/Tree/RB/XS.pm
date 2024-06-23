@@ -133,6 +133,11 @@ Whether to allow two nodes with the same key.  Defaults to false.
 Whether to enable full compatibility with L<Tree::RB>'s list-context behavior for L</get>.
 Defaults to false.
 
+=item L</track_recent>
+
+Whether to keep track of the insertion order of nodes, by default.  Defaults to false.
+You may toggle this attribute after construction.
+
 =item L</key_type>
 
 This is an internal detail that probably shouldn't have been exposed, and might be removed
@@ -151,6 +156,7 @@ sub new {
 	$self->_init_tree(delete $self->{key_type}, delete $self->{compare_fn});
 	$self->allow_duplicates(1) if delete $self->{allow_duplicates};
 	$self->compat_list_get(1) if delete $self->{compat_list_get};
+	$self->track_recent(1) if delete $self->{track_recent};
 	$self;
 }
 
@@ -191,6 +197,17 @@ method like 'get' change its behavior in list context.  So, by deault, this attr
 false and C<get> always returns one value.  But if you set this to true, C<get> changes in
 list context to also return the Node, like is done in L<Tree::RB/lookup>.
 
+=head2 track_recent
+
+Boolean, read/write.  Enabling this causes all nodes added (afterward) with L</put> or
+L</insert> to be added to an insertion-order linked list.  You can then inspect or iterate them
+with related methods.  Note that each node can be tracked or un-tracked individually, and this
+setting just changes the default for new nodes.  This allows you to differentiate more permanent
+data points vs. temporary ones that you might want to expire over time.
+
+See also: L</oldest>, L</newest>, L</recent_count>, L</iter_old_to_new>, L</iter_new_to_old>,
+L</truncate_recent>, and Node method L</mark_newest>.
+
 =head2 key_type
 
 The key-storage strategy used by the tree.  Read-only; pass as an option to
@@ -200,6 +217,10 @@ version.
 =head2 size
 
 Returns the number of elements in the tree.
+
+=head2 recent_count
+
+Returns the number of nodes with insertion-order tracking enabled.  See L</track_recent>.
 
 =head2 root_node
 
@@ -232,6 +253,8 @@ Alias: C<nth>
 *min= *min_node;
 *max= *max_node;
 *nth= *nth_node;
+*oldest= *oldest_node;
+*newest= *newest_node;
 
 =head1 METHODS
 
@@ -321,6 +344,19 @@ If you want to delete a range *exclusive* of one or both ends of the range, just
 use the L</get_node> method with the desired mode to look up each end of the nodes
 that you do want removed.
 
+=head2 truncate_recent
+
+  my @nodes= $tree->truncate_recent($max_count);
+
+Reduce the number of "recent" nodes (those with insertion-order tracking enabled) to
+C<$max_count>.  (See L</track_recent>)  Every pruned node is returned as a list.
+
+The intent here is that you may have some "permanent" nodes that stay in the tree, but more
+transient ones that you add on demand, and then you might want to purge the oldest of those
+when they exceed a threshold.
+
+If there are fewer than C<$max_count> nodes with insertion-order tracking, this has no effect.
+
 =head2 clear
 
   my $count= $tree->clear();
@@ -342,6 +378,16 @@ or from the key or node you provide up to max.
 Like C<iter>, but the C<< ->next >> and C<< ->step >> methods walk backward to smaller key
 values, and the default C<$get_mode> is L</GET_LE_LAST>.
 
+=head2 iter_old_to_new
+
+Return an iterator that iterates the insertion-order from oldest to newest.  This only iterates
+nodes with insertion-order tracking enabled.  See L</track_recent>.
+
+=head2 iter_new_to_old
+
+Return an iterator that iterates the insertion-order from newest to oldest.  This only iterates
+nodes with insertion-order tracking enabled.  See L</track_recent>.
+
 =cut
 
 sub iter {
@@ -356,6 +402,16 @@ sub rev_iter {
 	$key_or_node= $self->get_node($key_or_node, @_ > 2? $mode : GET_LE_LAST())
 		if @_ > 1 && ref $key_or_node ne 'Tree::RB::XS::Node';
 	Tree::RB::XS::Iter->_new($key_or_node || $self, -1);
+}
+
+sub iter_old_to_new {
+	my ($self, $node)= @_;
+	Tree::RB::XS::Iter->_new($node || $self, 2);
+}
+
+sub iter_new_to_old {
+	my ($self, $node)= @_;
+	Tree::RB::XS::Iter->_new($node || $self, -2);
 }
 
 =head1 NODE OBJECTS
@@ -380,6 +436,26 @@ The previous node in the sequence of keys.  Alias C<predecessor> for C<Tree::RB:
 =item next
 
 The next node in the sequence of keys.  Alias C<successor> for C<Tree::RB::Node> compat.
+
+=item recent_tracked
+
+Returns whether node has its insertion order tracked, or not.  This attribute can also be
+written.  Disabling recent_tracked removes it from the list of insertion order.  Enabling
+recent_tracked causes the node to be placed as the newest inserted node, the same as
+L</mark_newest>.
+
+=item mark_newest
+
+Promote this node to the end of the insertion-order tracking list as if it has just been
+inserted.
+
+=item older
+
+The previous node in insertion-order.  Always C<undef> unless node is L</recent_tracked>.
+
+=item newer
+
+The next node in insertion-order.  Always C<undef> unless node is L</recent_tracked>.
 
 =item tree
 
@@ -452,6 +528,14 @@ Shortcut for C<< $node->tree->iter($node) >>.
 
 Shortcut for C<< $node->tree->rev_iter($node) >>.
 
+=item iter_newer
+
+Shortcut for C<< $node->tree->iter_old_to_new($node) >>.
+
+=item iter_older
+
+Shortcut for C<< $node->tree->iter_new_to_old($node) >>.
+
 =back
 
 =cut
@@ -484,6 +568,14 @@ sub Tree::RB::XS::Node::iter {
 
 sub Tree::RB::XS::Node::rev_iter {
 	Tree::RB::XS::Iter->_new($_[0], -1);
+}
+
+sub Tree::RB::XS::Node::iter_newer {
+	Tree::RB::XS::Iter->_new($_[0], 2);
+}
+
+sub Tree::RB::XS::Node::iter_older {
+	Tree::RB::XS::Iter->_new($_[0], -2);
 }
 
 =head1 ITERATOR OBJECTS
@@ -646,7 +738,7 @@ to be the node at or after the C<$key>.  (or before, if you change to a reverse 
 This method differs from L<Tree::RB/hseek> in that C<Tree::RB> will change the logical first
 node of the iteration *indefinitely* such that repeated calls to C<keys> do not see any element
 less than C<$key>.  This C<hseek> only applies to the next iteration.  (which I'm guessing was
-th intent in Tree::RB?)
+the intent in Tree::RB?)
 
 =back
 
