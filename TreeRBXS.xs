@@ -263,7 +263,7 @@ struct TreeRBXS_item {
 static void TreeRBXS_init_tmp_item(struct TreeRBXS_item *item, struct TreeRBXS *tree, SV *key, SV *value);
 static struct TreeRBXS_item * TreeRBXS_new_item_from_tmp_item(struct TreeRBXS_item *src);
 static struct TreeRBXS* TreeRBXS_item_get_tree(struct TreeRBXS_item *item);
-static void TreeRBXS_item_advance_all_iters(struct TreeRBXS_item* item);
+static void TreeRBXS_item_advance_all_iters(struct TreeRBXS_item* item, int flags);
 static void TreeRBXS_item_detach_iter(struct TreeRBXS_item *item, struct TreeRBXS_iter *iter);
 static void TreeRBXS_item_detach_owner(struct TreeRBXS_item* item);
 static void TreeRBXS_item_free(struct TreeRBXS_item *item);
@@ -566,26 +566,25 @@ static void TreeRBXS_iter_advance(struct TreeRBXS_iter *iter, IV ofs) {
  * which could matter for the case where deleting many nodes has resulted in many iterators
  * piled up on the same node.
  */
-static void TreeRBXS_item_advance_all_iters(struct TreeRBXS_item* item) {
+#define ONLY_ADVANCE_RECENT 1
+static void TreeRBXS_item_advance_all_iters(struct TreeRBXS_item* item, int flags) {
 	rbtree_node_t *node;
 	struct TreeRBXS_item *next_item= NULL, *prev_item= NULL,
 		*next_recent= NULL, *prev_recent= NULL;
 	struct TreeRBXS_iter *iter, *next;
 	
 	// Dissolve a linked list to move the iters to the previous or next item's linked list
-	for (iter= item->iter; iter; iter= next) {
+	for (iter= item->iter, item->iter= NULL; iter; iter= next) {
 		next= iter->next_iter;
 		if (iter->recent) { // iterating insertion order?
 			if (iter->reverse) { // newest to oldest?
 				if (!prev_recent) {
-					if (item == iter->tree->recent_oldest) {
+					if (item == iter->tree->recent_oldest || !item->recent_older_p) {
 						// end of iteration
 						iter->item= NULL;
 						iter->next_iter= NULL;
 						continue;
 					} else {
-						if (!item->recent_older_p)
-							croak("BUG: insertion-order iterator pointing at non-recent-tracked node");
 						prev_recent= GET_TreeRBXS_item_FROM_recent_newer(item->recent_older_p);
 					}
 				}
@@ -606,6 +605,11 @@ static void TreeRBXS_item_advance_all_iters(struct TreeRBXS_item* item) {
 				iter->next_iter= next_recent->iter;
 				next_recent->iter= iter;
 			}
+		}
+		else if (flags & ONLY_ADVANCE_RECENT) {
+			// only advancing recent-list iterators, so key-order iterator needs to stay at this item.
+			iter->next_iter= item->iter;
+			item->iter= iter;
 		}
 		else { // iterating key order
 			if (iter->reverse) { // iterating high to low
@@ -652,7 +656,7 @@ static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBX
 	if (rbtree_node_is_in_tree(&item->rbnode)) {
 		// If any iterator points to this node, move it to the following node.
 		if (item->iter)
-			TreeRBXS_item_advance_all_iters(item);
+			TreeRBXS_item_advance_all_iters(item, 0);
 		// If the node was part of LRU cache, cancel that
 		if (item->recent_older_p)
 			TreeRBXS_recent_cancel(tree, item);
@@ -758,7 +762,12 @@ static void TreeRBXS_recent_touch(struct TreeRBXS *tree, struct TreeRBXS_item *i
  * Users can call this at any time in order to remove certain nodes from consideration.
  */
 static void TreeRBXS_recent_cancel(struct TreeRBXS *tree, struct TreeRBXS_item *item) {
+	struct TreeRBXS_iter *iter, *next;
 	if (item->recent_older_p) {
+		// Move recent-list iterators pointing to this node
+		if (item->iter)
+			TreeRBXS_item_advance_all_iters(item, ONLY_ADVANCE_RECENT);
+
 		*item->recent_older_p= item->recent_newer;
 		if (item->recent_newer) {
 			item->recent_newer->recent_older_p= item->recent_older_p;
@@ -2094,6 +2103,14 @@ value(iter)
 	struct TreeRBXS_iter *iter
 	CODE:
 		RETVAL= iter->item? SvREFCNT_inc_simple_NN(iter->item->value) : &PL_sv_undef;
+	OUTPUT:
+		RETVAL
+
+struct TreeRBXS_item *
+node(iter)
+	struct TreeRBXS_iter *iter
+	CODE:
+		RETVAL= iter->item;
 	OUTPUT:
 		RETVAL
 

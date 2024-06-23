@@ -53,10 +53,24 @@ trusting it with production data.
   $tree->put("test" => "x");
   
   say $tree->min->key;                  # inspect the node objects
-  say $tree->nth(0)->key;
+  say $tree->nth(0)->key;               # log(n) indexing
   my $node= $tree->min;
   my $next= $node->next;
   $node->prune;
+  
+  # LRU Cache feature
+  $tree= Tree::RB::XS->new(
+    compare_fn => 'int',
+    track_recent => 1,                  # Remember order of added keys
+  );
+  $tree->put($_,$_) for 1,3,2;
+  $x= $tree->newest->key;               # 2
+  $x= $tree->oldest->key;               # 1
+  @insertion_order=
+    $tree->iter_newer->next_keys('*');  # (1,3,2)
+  $tree->get_node(1)->mark_newest;      # simulate delete+put of same node
+  $tree->iter_newer->next_keys('*');    # (3,2,1)
+  @removed= $tree->truncate_recent(1);  # (3,2)
   
   # iterators
   
@@ -65,7 +79,7 @@ trusting it with production data.
   }
   
   my $i= $tree->rev_iter;
-  while (my $node= $i->next) {
+  while (my $node= &$i) {
     $node->prune if $node->key =~ ...;
   }
   
@@ -614,13 +628,17 @@ bit of a performance boost for large tree operations.
 
 =over
 
+=item node
+
+The current node.
+
 =item key
 
 The key of the current node.
 
 =item value
 
-The value of the current node.  Note that this returns the actual value, which in an aliased
+The value of the current node.  Note that this returns an lvalue, which in an aliased
 context allows you to modify the value stored in the tree.
 
   $_++ for $iter->value;
@@ -717,7 +735,7 @@ Returns a new iterator of the same direction pointing at the same node.
 sub Tree::RB::XS::Iter::_new {
 	my $class= shift;
 	my ($self,$y);
-	$self= bless sub { Tree::XS::RB::Iter::next($y) }, $class;
+	$self= bless sub { Tree::RB::XS::Iter::next($y) }, $class;
 	Scalar::Util::weaken($y= $self);
 	$self->_init(@_);
 }
