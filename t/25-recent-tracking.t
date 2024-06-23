@@ -92,20 +92,28 @@ subtest iterators => sub {
    is( $iter3->key, 4, 'recent[-1] == 4' );
    my $iter4= $t->iter_newer; $iter4->step(3);
    is( $iter4->key, 2, 'recent[3] == 1' );
+   my $iterA= $t->iter;
+   my $iterB= $t->iter; $iterB->step(1);
+   my $iterC= $t->iter; $iterC->step(2);
+   my $iterD= $t->iter; $iterD->step(3);
    
    # delete or un-track nodes, and verify iterators bump to correct destination
    $t->get_node(4)->recent_tracked(0);
    is( $iter3->key, 3, 'rev iter bumped backward' );
+   is( $iterD->key, 4, 'normal iter still on 4' );
    $t->delete(3);
-   is( $iter3->key, 1, 'rev iter bumped backward' );
-   ok( $iter2->key, 2, 'forward iter bumped forward' );
+   is( $iterC->key, 4, 'forward normal iter goes to 4' );
+   is( $iter3->key, 1, 'rev recent iter bumped backward' );
+   ok( $iter2->key, 2, 'forward recent iter bumped forward' );
    $t->delete(1);
-   is( $iter->key, 2, 'forward iter bumped forward' );
-   ok( $iter3->done, 'reverse iter bumped off end' );
+   is( $iterA->key, 2, 'forward normal iter bumped forward' );
+   is( $iter->key, 2, 'forward recent iter bumped forward' );
+   ok( $iter3->done, 'reverse recent iter bumped off end' );
    ok( $iter->node == $iter2->node && $iter2->node == $iter4->node, 'iters stacked on final' );
    $t->get_node(4)->mark_newest;
    $t->get_node(2)->recent_tracked(0);
-   is( $iter->key, 4, 'iters bumped to new newest node' );
+   ok( $iterA->node == $iterB->node && $iterB->key == 2, 'normal iters still on node 2' );
+   is( $iter->key, 4, 'recent iters bumped to new newest node' );
    ok( $iter->node == $iter2->node && $iter2->node == $iter4->node, 'iters stacked on new final' );
    ok( !$iter->step(1), 'step iter1 reaches end' );
    &$iter2;
