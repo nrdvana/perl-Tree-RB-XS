@@ -218,9 +218,11 @@ struct TreeRBXS {
 };
 
 static void TreeRBXS_init(struct TreeRBXS *tree, SV *owner);
+static void TreeRBXS_clear(struct TreeRBXS *tree);
 static void TreeRBXS_assert_structure(struct TreeRBXS *tree);
 struct TreeRBXS_iter * TreeRBXS_get_hashiter(struct TreeRBXS *tree);
 static struct TreeRBXS_item *TreeRBXS_find_item(struct TreeRBXS *tree, struct TreeRBXS_item *key, int mode);
+static bool TreeRBXS_is_member(struct TreeRBXS *tree, struct TreeRBXS_item *item);
 static void TreeRBXS_recent_insert_before(struct TreeRBXS *tree, struct TreeRBXS_item *item, struct dllist_node *node_after);
 static void TreeRBXS_recent_prune(struct TreeRBXS *tree, struct TreeRBXS_item *item);
 static void TreeRBXS_destroy(struct TreeRBXS *tree);
@@ -269,6 +271,8 @@ static struct TreeRBXS* TreeRBXS_item_get_tree(struct TreeRBXS_item *item);
 static void TreeRBXS_item_advance_all_iters(struct TreeRBXS_item* item, int flags);
 static void TreeRBXS_item_detach_iter(struct TreeRBXS_item *item, struct TreeRBXS_iter *iter);
 static void TreeRBXS_item_detach_owner(struct TreeRBXS_item* item);
+static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBXS *tree);
+static void TreeRBXS_item_clear(struct TreeRBXS_item* item, struct TreeRBXS *tree);
 static void TreeRBXS_item_free(struct TreeRBXS_item *item);
 
 struct TreeRBXS_iter {
@@ -289,6 +293,14 @@ static void TreeRBXS_init(struct TreeRBXS *tree, SV *owner) {
 	rbtree_init_tree(&tree->root_sentinel, &tree->leaf_sentinel);
 	tree->recent.next= &tree->recent;
 	tree->recent.prev= &tree->recent;
+}
+
+static void TreeRBXS_clear(struct TreeRBXS *tree) {
+	rbtree_clear(&tree->root_sentinel, (void (*)(void *, void *)) &TreeRBXS_item_clear,
+		-OFS_TreeRBXS_item_FIELD_rbnode, tree);
+	tree->recent.prev= &tree->recent;
+	tree->recent.next= &tree->recent;
+	tree->recent_count= 0;
 }
 
 static void TreeRBXS_assert_structure(struct TreeRBXS *tree) {
@@ -423,6 +435,13 @@ static struct TreeRBXS_item * TreeRBXS_new_item_from_tmp_item(struct TreeRBXS_it
 static struct TreeRBXS* TreeRBXS_item_get_tree(struct TreeRBXS_item *item) {
 	rbtree_node_t *node= rbtree_node_rootsentinel(&item->rbnode);
 	return node? GET_TreeRBXS_FROM_root_sentinel(node) : NULL;
+}
+
+static bool TreeRBXS_is_member(struct TreeRBXS *tree, struct TreeRBXS_item *item) {
+	rbtree_node_t *node= &item->rbnode;
+	while (node && node->parent)
+		node= node->parent;
+	return node == &tree->root_sentinel;
 }
 
 static void TreeRBXS_item_free(struct TreeRBXS_item *item) {
@@ -669,6 +688,8 @@ static void TreeRBXS_item_advance_all_iters(struct TreeRBXS_item* item, int flag
 	}
 }
 
+/* Disconnect an item from the tree, gracefully
+ */
 static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBXS *tree) {
 	//warn("TreeRBXS_item_detach_tree");
 	//warn("detach tree %p %p key %d", item, tree, (int) item->keyunion.ikey);
@@ -688,6 +709,28 @@ static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBX
 		TreeRBXS_item_free(item);
 }
 
+/* Callback when clearing the entire tree.
+ * This is like _detach_tree, but doesn't need to clean up relation to other nodes.
+ */
+static void TreeRBXS_item_clear(struct TreeRBXS_item* item, struct TreeRBXS *tree) {
+	struct TreeRBXS_iter *iter= item->iter, *next;
+	// Detach all iterators from this node.
+	while (iter) {
+		next= iter->next_iter;
+		iter->item= NULL;
+		iter->next_iter= NULL;
+		iter= next;
+	}
+	item->iter= NULL;
+	item->recent.next= NULL;
+	item->recent.prev= NULL;
+	if (rbtree_node_is_in_tree(&item->rbnode))
+		memset(&item->rbnode, 0, sizeof(item->rbnode));
+	// If the item is still referenced by the perl Node object, don't delete it.
+	if (!item->owner)
+		TreeRBXS_item_free(item);
+}
+
 static void TreeRBXS_iter_free(struct TreeRBXS_iter *iter) {
 	if (iter->item)
 		TreeRBXS_item_detach_iter(iter->item, iter);
@@ -702,7 +745,7 @@ static void TreeRBXS_iter_free(struct TreeRBXS_iter *iter) {
 
 static void TreeRBXS_destroy(struct TreeRBXS *tree) {
 	//warn("TreeRBXS_destroy");
-	rbtree_clear(&tree->root_sentinel, (void (*)(void *, void *)) &TreeRBXS_item_detach_tree, -OFS_TreeRBXS_item_FIELD_rbnode, tree);
+	rbtree_clear(&tree->root_sentinel, (void (*)(void *, void *)) &TreeRBXS_item_clear, -OFS_TreeRBXS_item_FIELD_rbnode, tree);
 	if (tree->compare_callback)
 		SvREFCNT_dec(tree->compare_callback);
 	if (tree->hashiter)
@@ -1594,11 +1637,8 @@ delete(tree, key1, key2= NULL)
 			croak("Can't use undef as a key");
 		RETVAL= 0;
 		if ((item= TreeRBXS_get_magic_item(key1, 0))) {
-			first= &item->rbnode;
-			// verify it comes from this tree
-			for (node= first; rbtree_node_is_in_tree(node) && node->parent; node= node->parent);
-			if (node != &tree->root_sentinel)
-				croak("Node is not in tree");
+			if (!TreeRBXS_is_member(tree, item))
+				croak("Node does not belong to this tree");
 		}
 		else {
 			TreeRBXS_init_tmp_item(&stack_item, tree, key1, &PL_sv_undef);
@@ -1625,11 +1665,8 @@ delete(tree, key1, key2= NULL)
 		// look for the end of the range.
 		if (key2 && first) {
 			if ((item= TreeRBXS_get_magic_item(key2, 0))) {
-				last= &item->rbnode;
-				// verify it comes from this tree
-				for (node= last; rbtree_node_is_in_tree(node) && node->parent; node= node->parent);
-				if (node != &tree->root_sentinel)
-					croak("Node is not in tree");
+				if (!TreeRBXS_is_member(tree, item))
+					croak("Node does not belong to this tree");
 			}
 			else {
 				TreeRBXS_init_tmp_item(&stack_item, tree, key2, &PL_sv_undef);
@@ -1704,8 +1741,7 @@ clear(tree)
 	struct TreeRBXS *tree
 	CODE:
 		RETVAL= TreeRBXS_get_count(tree);
-		rbtree_clear(&tree->root_sentinel, (void (*)(void *, void *)) &TreeRBXS_item_detach_tree,
-			-OFS_TreeRBXS_item_FIELD_rbnode, tree);
+		TreeRBXS_clear(tree);
 	OUTPUT:
 		RETVAL
 
@@ -1757,8 +1793,8 @@ oldest_node(tree, newval= NULL)
 	struct TreeRBXS_item *newval
 	CODE:
 		if (newval) {
-			if (TreeRBXS_item_get_tree(newval) != tree)
-				croak("Node belongs to a different tree");
+			if (!TreeRBXS_is_member(tree, newval))
+				croak("Node does not belong to this tree");
 			TreeRBXS_recent_insert_before(tree, newval, tree->recent.next);
 		}
 		RETVAL= tree->recent.next == &tree->recent? NULL
@@ -1772,8 +1808,8 @@ newest_node(tree, newval= NULL)
 	struct TreeRBXS_item *newval
 	CODE:
 		if (newval) {
-			if (TreeRBXS_item_get_tree(newval) != tree)
-				croak("Node belongs to a different tree");
+			if (!TreeRBXS_is_member(tree, newval))
+				croak("Node does not belong to this tree");
 			TreeRBXS_recent_insert_before(tree, newval, &tree->recent);
 		}
 		RETVAL= tree->recent.prev == &tree->recent? NULL

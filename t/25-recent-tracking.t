@@ -134,6 +134,17 @@ subtest iterators => sub {
    ok( !$iter->step(1), 'step iter1 reaches end' );
    &$iter2;
    ok( $iter2->done, 'iter2 reached end' );
+
+   $t->clear;
+   for ($iter, $iter2, $iter3, $iter4, $iterA, $iterB, $iterC, $iterD) {
+      is( $iter, object {
+         call key => undef;
+         call value => undef;
+         call node => undef;
+         call done => T;
+         call next => undef;
+      });
+   }
 };
 
 done_testing;

@@ -58,7 +58,6 @@ our %EXPORT_TAGS= (
   # LRU Cache feature
   
   $tree= Tree::RB::XS->new(
-    compare_fn => 'int',
     track_recent => 1,                  # Remember order of added keys
   );
   $tree->put($_,$_) for 1,3,2;
@@ -68,7 +67,7 @@ our %EXPORT_TAGS= (
     $tree->iter_newer->next_keys('*');  # (1,3,2)
   $tree->get_node(1)->mark_newest;      # simulate delete+put of same node
   $tree->iter_newer->next_keys('*');    # (3,2,1)
-  @removed= $tree->truncate_recent(1);  # (3,2)
+  @removed= $tree->truncate_recent(2);  # (3), leaving (2,1) in the tree
   
   # iterators
   
