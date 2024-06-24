@@ -27,6 +27,20 @@ subtest re_insert => sub {
    is( $t->recent_count, 2, 'recent_count' );
    is( $t->oldest->newer->key, 1, 'oldest->newer' );
    is( $t->newest->older->key, 2, 'newest->older' );
+
+   $t->put(6,6);
+   is( $t->newest->key, 6, 'newest = 6' );
+   # insert node 6 following node 2
+   $t->get_node(2)->newer($t->get_node(6));
+   is( $t->newest->key, 1, 'newest = 1' );
+   is( $t->newest->older->key, 6, '6 at middle' );
+   # insert node 1 before node 6
+   $t->get_node(6)->older($t->get_node(1));
+   is( $t->newest->key, 6, 'newest = 6' );
+   is( $t->newest->older->key, 1, '1 at middle' );
+
+   is( $t->newest($t->get_node(1))->key, 1, 'newest = 1' );
+   is( $t->oldest($t->get_node(1))->key, 1, 'oldest = 1' );
 };
 
 subtest delete => sub {
@@ -99,6 +113,8 @@ subtest iterators => sub {
    
    # delete or un-track nodes, and verify iterators bump to correct destination
    $t->get_node(4)->recent_tracked(0);
+   is( $t->get_node(4)->newer, undef, 'untracked ->newer' );
+   is( $t->get_node(4)->older, undef, 'untracked ->older' );
    is( $iter3->key, 3, 'rev iter bumped backward' );
    is( $iterD->key, 4, 'normal iter still on 4' );
    $t->delete(3);

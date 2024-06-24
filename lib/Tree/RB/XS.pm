@@ -25,9 +25,6 @@ our %EXPORT_TAGS= (
 
 =head1 SYNOPSIS
 
-B<NOTICE:> This module is very new and you should give it some thorough testing before
-trusting it with production data.
-
   use Tree::RB::XS qw/ :cmp :get /;
   
   my $tree= Tree::RB::XS->new;
@@ -59,6 +56,7 @@ trusting it with production data.
   $node->prune;
   
   # LRU Cache feature
+  
   $tree= Tree::RB::XS->new(
     compare_fn => 'int',
     track_recent => 1,                  # Remember order of added keys
@@ -90,32 +88,30 @@ trusting it with production data.
 
 =head1 DESCRIPTION
 
-This module is a wrapper for a Red/Black Tree implemented in C.  It's primary features over
-other search trees on CPAN are optimized comparisons of keys (speed), C<< O(log N) >>
-node-by-index lookup (which allows the tree to act as an array), and the option to
-allow duplicate keys while preserving insertion order.
-
-The API is almost a complete superset of L<Tree::RB> with a few differences:
+This is a feature-rich Red/Black Tree implemented in C.  Special features (above and beyond the
+basics you'd expect from a treemap) include:
 
 =over
 
 =item *
 
-The C<get> method in this module is not affected by array context, unless you
-request L</compat_list_get>.
+Optimized storage and L<comparisons of keys|/compare_fn> (speed)
 
 =item *
 
-C<resort> is not implemented (would be lots of effort, and unlikely to be needed)
+C<< O(log N) >> L<Nth-node lookup|/nth_node> (which allows the tree to act as an array)
 
 =item *
 
-Tree structure is not mutable via the attributes of Node, nor can nodes be created
-independent from a tree.
+Smart bi-directional L<iterators|/ITERATOR OBJECTS> that advance when you delete the current node.
 
 =item *
 
-Many methods have official names changed, but aliases are provided for compatibility.
+Option to allow L<duplicate keys|/allow_duplicates> while preserving insertion order.
+
+=item *
+
+Optional linked-list of L<"recent" order|/track_recent>, to facilitate LRU or MRU caches.
 
 =back
 
@@ -267,12 +263,18 @@ Alias: C<nth>
 
 =head2 oldest_node
 
+  $oldest= $tree->oldest_node;
+  $tree->oldest_node($node);
+
 The earliest node that was inserted with L</track_recent> enabled/applied.
 C<undef> if no nodes have insertion-order tracking.
 
 Alias: C<oldest>
 
 =head2 newest_node
+
+  $newest= $tree->newest_node;
+  $tree->newest_node($node);
 
 The most recent node that was inserted with L</track_recent> enabled/applied.
 C<undef> if no nodes have insertion-order tracking.
@@ -483,11 +485,19 @@ inserted.
 
 =item older
 
+  $older= $node->older;
+  $node->older($insert_before);
+
 The previous node in insertion-order.  Always C<undef> unless node is L</recent_tracked>.
+When written, it places that node before this node in the "recent" list.
 
 =item newer
 
+  $older= $node->newer;
+  $node->newer($insert_after);
+
 The next node in insertion-order.  Always C<undef> unless node is L</recent_tracked>.
+When written, it places that node after this node in the "recent" list.
 
 =item tree
 
@@ -979,6 +989,30 @@ Has alias C<LUPREV> to match Tree::RB.
 
 The Red/Black module this one used as API inspiration.  The fastest pure-perl tree module on
 CPAN.  Implemented as blessed arrayrefs.
+
+The API of this module is almost a complete superset of C<Tree::RB> with a few differences:
+
+=over
+
+=item *
+
+The C<get> method in this module is not affected by array context, unless you
+request L</compat_list_get>.
+
+=item *
+
+C<resort> is not implemented (would be lots of effort, and unlikely to be needed)
+
+=item *
+
+Tree structure is not mutable via the attributes of Node, nor can nodes be created
+independent from a tree.
+
+=item *
+
+Many methods have official names changed, but aliases are provided for compatibility.
+
+=back
 
 =item L<AVLTree>
 

@@ -221,8 +221,8 @@ static void TreeRBXS_init(struct TreeRBXS *tree, SV *owner);
 static void TreeRBXS_assert_structure(struct TreeRBXS *tree);
 struct TreeRBXS_iter * TreeRBXS_get_hashiter(struct TreeRBXS *tree);
 static struct TreeRBXS_item *TreeRBXS_find_item(struct TreeRBXS *tree, struct TreeRBXS_item *key, int mode);
-static void TreeRBXS_recent_set_newest(struct TreeRBXS *tree, struct TreeRBXS_item *item);
-static void TreeRBXS_recent_forget(struct TreeRBXS *tree, struct TreeRBXS_item *item);
+static void TreeRBXS_recent_insert_before(struct TreeRBXS *tree, struct TreeRBXS_item *item, struct dllist_node *node_after);
+static void TreeRBXS_recent_prune(struct TreeRBXS *tree, struct TreeRBXS_item *item);
 static void TreeRBXS_destroy(struct TreeRBXS *tree);
 
 #define TreeRBXS_get_root(tree) ((tree)->root_sentinel.left)
@@ -678,7 +678,7 @@ static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBX
 			TreeRBXS_item_advance_all_iters(item, 0);
 		// If the node was part of LRU cache, cancel that
 		if (item->recent.next)
-			TreeRBXS_recent_forget(tree, item);
+			TreeRBXS_recent_prune(tree, item);
 		rbtree_node_prune(&item->rbnode);
 	}
 	/* The item could be owned by a tree or by a Node/Iterator, or both.
@@ -755,27 +755,29 @@ static struct TreeRBXS_item *TreeRBXS_find_item(struct TreeRBXS *tree, struct Tr
 
 /* Mark the current tree item as the most recent, regardless of whether it was previously tracked.
  */
-static void TreeRBXS_recent_set_newest(struct TreeRBXS *tree, struct TreeRBXS_item *item) {
-	// Not already the head of the list?
-	if (item->recent.next != &tree->recent) {
+static void TreeRBXS_recent_insert_before(struct TreeRBXS *tree, struct TreeRBXS_item *item, struct dllist_node *node_after) {
+	struct dllist_node *node_before;
+	// Not already before this node?
+	if (item->recent.next != node_after) {
 		if (item->recent.next) {
 			// remove from linkedlist
 			item->recent.prev->next= item->recent.next;
 			item->recent.next->prev= item->recent.prev;
 		} else
 			++tree->recent_count;
-		// Add to head of list
-		tree->recent.prev->next= &item->recent;
-		item->recent.prev= tree->recent.prev;
-		item->recent.next= &tree->recent;
-		tree->recent.prev= &item->recent;
+		// Add following 'node_before'
+		node_before= node_after->prev;
+		node_after->prev= &item->recent;
+		node_before->next= &item->recent;
+		item->recent.prev= node_before;
+		item->recent.next= node_after;
 	}
 }
 
 /* Stop recent-tracking for the tree item.
  * Users can call this at any time in order to remove certain nodes from consideration.
  */
-static void TreeRBXS_recent_forget(struct TreeRBXS *tree, struct TreeRBXS_item *item) {
+static void TreeRBXS_recent_prune(struct TreeRBXS *tree, struct TreeRBXS_item *item) {
 	struct TreeRBXS_iter *iter;
 	if (item->recent.next) {
 		// Move recent-list iterators pointing to this node
@@ -783,6 +785,8 @@ static void TreeRBXS_recent_forget(struct TreeRBXS *tree, struct TreeRBXS_item *
 			TreeRBXS_item_advance_all_iters(item, ONLY_ADVANCE_RECENT);
 		item->recent.prev->next= item->recent.next;
 		item->recent.next->prev= item->recent.prev;
+		item->recent.next= NULL;
+		item->recent.prev= NULL;
 		--tree->recent_count;
 	}
 }
@@ -1396,7 +1400,7 @@ insert(tree, key, val)
 				croak("BUG: insert failed");
 			}
 			if (tree->track_recent)
-				TreeRBXS_recent_set_newest(tree, item);
+				TreeRBXS_recent_insert_before(tree, item, &tree->recent);
 			RETVAL= rbtree_node_index(&item->rbnode);
 		}
 		//TreeRBXS_assert_structure(tree);
@@ -1451,7 +1455,7 @@ put(tree, key, val)
 			}
 		}
 		if (tree->track_recent || item->recent.next)
-			TreeRBXS_recent_set_newest(tree, item);
+			TreeRBXS_recent_insert_before(tree, item, &tree->recent);
 		XSRETURN(1);
 
 void
@@ -1748,18 +1752,30 @@ root_node(tree)
 		RETVAL
 
 struct TreeRBXS_item *
-oldest_node(tree)
+oldest_node(tree, newval= NULL)
 	struct TreeRBXS *tree
+	struct TreeRBXS_item *newval
 	CODE:
+		if (newval) {
+			if (TreeRBXS_item_get_tree(newval) != tree)
+				croak("Node belongs to a different tree");
+			TreeRBXS_recent_insert_before(tree, newval, tree->recent.next);
+		}
 		RETVAL= tree->recent.next == &tree->recent? NULL
 			: GET_TreeRBXS_item_FROM_recent(tree->recent.next);
 	OUTPUT:
 		RETVAL
 
 struct TreeRBXS_item *
-newest_node(tree)
+newest_node(tree, newval= NULL)
 	struct TreeRBXS *tree
+	struct TreeRBXS_item *newval
 	CODE:
+		if (newval) {
+			if (TreeRBXS_item_get_tree(newval) != tree)
+				croak("Node belongs to a different tree");
+			TreeRBXS_recent_insert_before(tree, newval, &tree->recent);
+		}
 		RETVAL= tree->recent.prev == &tree->recent? NULL
 			: GET_TreeRBXS_item_FROM_recent(tree->recent.prev);
 	OUTPUT:
@@ -1903,25 +1919,39 @@ next(item)
 		RETVAL
 
 struct TreeRBXS_item *
-newer(item)
+newer(item, newval=NULL)
 	struct TreeRBXS_item *item
+	struct TreeRBXS_item *newval
 	INIT:
 		struct TreeRBXS *tree= TreeRBXS_item_get_tree(item);
 		struct dllist_node *next= item->recent.next;
 	CODE:
-		RETVAL= (next == &tree->recent)? NULL
+		if (newval) {
+			if (!next)
+				croak("Can't insert relative to a node that isn't recent_tracked");
+			TreeRBXS_recent_insert_before(tree, newval, next);
+			next= &newval->recent;
+		}
+		RETVAL= (!next || next == &tree->recent)? NULL
 			: GET_TreeRBXS_item_FROM_recent(next);
 	OUTPUT:
 		RETVAL
 
 struct TreeRBXS_item *
-older(item)
+older(item, newval=NULL)
 	struct TreeRBXS_item *item
+	struct TreeRBXS_item *newval
 	INIT:
 		struct TreeRBXS *tree= TreeRBXS_item_get_tree(item);
 		struct dllist_node *prev= item->recent.prev;
 	CODE:
-		RETVAL= (prev == &tree->recent)? NULL
+		if (newval) {
+			if (!prev)
+				croak("Can't insert relative to a node that isn't recent_tracked");
+			TreeRBXS_recent_insert_before(tree, newval, &item->recent);
+			prev= &newval->recent;
+		}
+		RETVAL= (!prev || prev == &tree->recent)? NULL
 			: GET_TreeRBXS_item_FROM_recent(prev);
 	OUTPUT:
 		RETVAL
@@ -2022,9 +2052,9 @@ recent_tracked(item, newval)
 		if (items > 1) {
 			tree= TreeRBXS_item_get_tree(item);
 			if (SvTRUE(newval))
-				TreeRBXS_recent_set_newest(tree, item);
+				TreeRBXS_recent_insert_before(tree, item, &tree->recent);
 			else
-				TreeRBXS_recent_forget(tree, item);
+				TreeRBXS_recent_prune(tree, item);
 			// ST(0) is $self, so let it be the return value
 		} else {
 			ST(0)= sv_2mortal(newSViv(item->recent.next? 1 : 0));
@@ -2037,7 +2067,16 @@ mark_newest(item)
 	INIT:
 		struct TreeRBXS *tree= TreeRBXS_item_get_tree(item);
 	PPCODE:
-		TreeRBXS_recent_set_newest(tree, item);
+		TreeRBXS_recent_insert_before(tree, item, &tree->recent);
+		XSRETURN(1);
+
+void
+mark_oldest(item)
+	struct TreeRBXS_item *item
+	INIT:
+		struct TreeRBXS *tree= TreeRBXS_item_get_tree(item);
+	PPCODE:
+		TreeRBXS_recent_insert_before(tree, item, tree->recent.next);
 		XSRETURN(1);
 
 #-----------------------------------------------------------------------------
