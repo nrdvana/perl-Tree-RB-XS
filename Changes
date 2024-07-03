@@ -1,22 +1,10 @@
-Version 0.08
+Version 0.08 - 2024-07-02
   - New feature of insertion-order tracking:
-     - Tree attributes:
-        - track_recent (and ctor option)
-        - newest_node
-        - oldest_node
-        - recent_count
-     - Tree methods:
-        - iter_newer
-        - iter_older
-        - truncate_recent
-     - Node attributes:
-        - newer
-        - older
-        - recent_tracked
-     - Node methods:
-        - mark_newest
-        - iter_newer
-        - iter_older
+     - Tree attributes: track_recent (and ctor option), newest_node,
+        oldest_node, recent_count
+     - Tree methods: iter_newer, iter_older, truncate_recent
+     - Node attributes: newer, older, recent_tracked
+     - Node methods: mark_newest, iter_newer, iter_older
   - Iterator attribute 'node'  (had 'key' and 'value', but not 'node'?)
   - Fix bug so iterators can be called as functions, as intended
   - Alias iterator methods for clearer singular usage
