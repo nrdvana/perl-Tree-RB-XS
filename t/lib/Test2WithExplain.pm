@@ -19,7 +19,8 @@ eval q{
 # Perl didn't get <<~'x' until 5.28
 sub unindent {
    my ($indent)= ($_[0] =~ /^(\s+)/);
-   $_[0] =~ s/^$indent//mgr;
+   (my $x= $_[0]) =~ s/^$indent//mg;
+   $x;
 }
 
 1;
