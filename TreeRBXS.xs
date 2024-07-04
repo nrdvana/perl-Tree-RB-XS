@@ -2250,7 +2250,8 @@ next(iter, count_sv= NULL)
 	PPCODE:
 		if (iter->item) {
 			request= !count_sv? 1
-				: SvPOK(count_sv) && *SvPV_nolen(count_sv) == '*'? max_count
+				: ((SvPOK(count_sv) && *SvPV_nolen(count_sv) == '*')
+					|| (SvNOK(count_sv) && SvNV(count_sv) > (NV)PERL_INT_MAX))? max_count
 				: SvIV(count_sv);
 			if (request < 1) {
 				nret= 0;
