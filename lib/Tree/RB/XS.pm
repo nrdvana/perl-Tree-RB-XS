@@ -155,6 +155,24 @@ C<track_recent>
 Whether to keep track of the insertion order of nodes, by default.  Defaults to false.
 You may toggle this attribute after construction.
 
+=item *
+
+C<lookup_updates_recent>
+
+Whether L</lookup> and L</get> methods automatically mark a node as the most recent.
+This defaults to false, so only 'put' marks a node recent.  Even when true, 'exists' does not
+mark a node as recent, nor do iterators, min_node, max_node, nth_node, newest_node or
+oldest_node, as it is assumed using those methods are more about inspecting the state of
+the tree than representing access patterns of important keys.
+
+=item *
+
+C<kv>
+
+An initial list of C<key,value> pairs to initialize the tree with.  If allow_duplicates
+is requested, this uses L</insert_multi>, else it uses L</put_multi> (so later duplicate
+keys replace the values of earlier ones).
+
 =back
 
 =cut
@@ -169,6 +187,11 @@ sub new {
 	$self->allow_duplicates(1) if delete $self->{allow_duplicates};
 	$self->compat_list_get(1) if delete $self->{compat_list_get};
 	$self->track_recent(1) if delete $self->{track_recent};
+	$self->lookup_updates_recent(1) if delete $self->{lookup_updates_recent};
+	if (my $kv= $self->{kv}) {
+		$self->allow_duplicates? $self->insert_multi($kv)
+			: $self->put_multi($kv);
+	}
 	$self;
 }
 

@@ -213,6 +213,7 @@ struct TreeRBXS {
 	bool allowed_duplicates;       // was allow_duplicates ever true?  helps optimize put()
 	bool compat_list_get;          // flag to enable full compat with Tree::RB's list context behavior
 	bool track_recent;             // flag to automatically add new nodes to the recent-list
+	bool lookup_updates_recent;    // whether 'lookup' and 'get' move a node to the front of the recent-list
 	rbtree_node_t root_sentinel;   // parent-of-root, used by rbtree implementation.
 	rbtree_node_t leaf_sentinel;   // dummy node used by rbtree implementation.
 	struct TreeRBXS_iter *hashiter;// iterator used for TIEHASH
@@ -1520,7 +1521,7 @@ compat_list_get(tree, allow= NULL)
 			tree->compat_list_get= SvTRUE(allow);
 			// ST(0) is $self, so let it be the return value
 		} else {
-			ST(0)= sv_2mortal(newSViv(tree->compat_list_get? 1 : 0));
+			ST(0)= tree->compat_list_get? &PL_sv_yes : &PL_sv_no;
 		}
 		XSRETURN(1);
 
@@ -1533,7 +1534,20 @@ track_recent(tree, enable= NULL)
 			tree->track_recent= SvTRUE(enable);
 			// ST(0) is $self, so let it be the return value
 		} else {
-			ST(0)= sv_2mortal(newSViv(tree->track_recent? 1 : 0));
+			ST(0)= tree->track_recent? &PL_sv_yes : &PL_sv_no;
+		}
+		XSRETURN(1);
+
+void
+lookup_updates_recent(tree, enable= NULL)
+	struct TreeRBXS *tree
+	SV *enable
+	PPCODE:
+		if (items > 1) {
+			tree->lookup_updates_recent= SvTRUE(enable);
+			//ST(0) is $self, so let it be the return value
+		} else {
+			ST(0)= tree->lookup_updates_recent? &PL_sv_yes : &PL_sv_no;
 		}
 		XSRETURN(1);
 
@@ -1728,6 +1742,8 @@ get(tree, key, mode_sv= NULL)
 		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
 		item= TreeRBXS_find_item(tree, &stack_item, mode);
 		if (item) {
+			if (tree->lookup_updates_recent)
+				TreeRBXS_recent_insert_before(tree, item, &tree->recent);
 			if (ix == 0) { // lookup in list context
 				ST(0)= item->value;
 				ST(1)= sv_2mortal(TreeRBXS_wrap_item(item));
@@ -1772,6 +1788,8 @@ get_all(tree, key)
 			for (i= 0; i < count; i++) {
 				item= GET_TreeRBXS_item_FROM_rbnode(first);
 				ST(i)= item->value;
+				if (tree->lookup_updates_recent)
+					TreeRBXS_recent_insert_before(tree, item, &tree->recent);
 				first= rbtree_node_next(first);
 			}
 		} else
