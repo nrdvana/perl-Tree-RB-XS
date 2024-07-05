@@ -352,12 +352,35 @@ the old value, and updates the tree to reference the new value.  If the tree
 allows duplicate keys, this will remove all but one node having this key and
 then set its value.  Only the first old value will be returned.
 
+=head2 put_multi
+
+  $added_count= $tree->put_multi($k, $v, $k, $v, ...);
+  $added_count= $tree->put_multi([ $k, $v, $k, $v, ... ]);
+
+Put multiple keys and values into the tree.  If duplicate keys are supplied and
+L</allow_duplicates> is false, earlier (k,v) will be overwritten by later conflicting
+(k,v) in the list, the same way that happens when assigning this list to a perl hash.
+If C<allow_duplicates> is true, all key/value pairs will get added to the tree.
+
+The return value is the number of new keys added to the tree, not counting overwrites.
+
 =head2 insert
+
+  my $idx= $tree->insert($key, $value);
 
 Insert a new node into the tree, and return the index at which it was inserted.
 If L</allow_duplicates> is not enabled, and the node already existed, this returns -1
 and does not change the tree.  If C<allow_duplicates> is enabled, this adds the new
 node after all nodes of the same key, preserving the insertion order.
+
+=head2 insert_multi
+
+  $added_count= $tree->insert_multi($k, $v, $k, $v, ...);
+  $added_count= $tree->insert_multi([ $k, $v, $k, $v, ... ]);
+
+Perform multiple insertions, and return the number of items which got added.  Like
+L</insert> when L</allow_duplicates> is false, this does not replace existing values
+if the key already exists.
 
 =head2 delete
 
