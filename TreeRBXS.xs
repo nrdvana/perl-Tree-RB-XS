@@ -1640,27 +1640,43 @@ insert_multi(tree, ...)
 	OUTPUT:
 		RETVAL
 
-void
-EXISTS(tree, key)
+IV
+exists(tree, ...)
 	struct TreeRBXS *tree
-	SV *key
+	ALIAS:
+		Tree::RB::XS::EXISTS = 1
 	INIT:
 		struct TreeRBXS_item stack_item;
-		rbtree_node_t *node= NULL;
-		int cmp;
-	PPCODE:
-		if (!SvOK(key))
-			croak("Can't use undef as a key");
-		// create a fake item to act as a search key
-		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
-		node= rbtree_find_nearest(
-			&tree->root_sentinel,
-			&stack_item,
-			(int(*)(void*,void*,void*)) tree->compare,
-			tree, -OFS_TreeRBXS_item_FIELD_rbnode,
-			&cmp);
-		ST(0)= (node && cmp == 0)? &PL_sv_yes : &PL_sv_no;
-		XSRETURN(1);
+		rbtree_node_t *node;
+		SV *key;
+		int i, cmp;
+		size_t count, total= 0;
+	CODE:
+		for (i= 1; i < items; i++) {
+			key= ST(i);
+			TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
+			if (tree->allowed_duplicates) {
+				count= 0;
+				rbtree_find_all(&tree->root_sentinel,
+					&stack_item,
+					(int(*)(void*,void*,void*)) tree->compare,
+					tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+					NULL, NULL, &count);
+				total += count;
+			} else {
+				node= rbtree_find_nearest(
+					&tree->root_sentinel,
+					&stack_item,
+					(int(*)(void*,void*,void*)) tree->compare,
+					tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+					&cmp);
+				if (node && cmp == 0)
+					++total;
+			}
+		}
+		RETVAL= total;
+	OUTPUT:
+		RETVAL
 
 void
 get(tree, key, mode_sv= NULL)

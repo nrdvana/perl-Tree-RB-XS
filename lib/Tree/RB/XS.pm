@@ -343,6 +343,14 @@ Provided for compatibility with Tree::RB.  Same as L</get> in scalar context, bu
 if called in list context it returns both the value and the node from L</get_node>.
 You can also use Tree::RB's lookup-mode constants of "LUEQUAL", etc.
 
+=head2 exists
+
+  $count= $tree->exists($key);
+  $count= $tree->exists(@keys);
+
+Check whether a key exists (or multiple keys exist) in the tree, returning the
+total count of nodes having these keys.
+
 =head2 put
 
   my $old_val= $tree->put($key, $new_val);

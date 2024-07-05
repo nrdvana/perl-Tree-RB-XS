@@ -74,6 +74,7 @@ subtest replace_duplicates => sub {
 	$tree->put(2,5);
 	is( $rev_iter->value, 3, 'rev iter on node3' );
 	is( $tree->size, 5, 'size=5' );
+	is( $tree->exists(1), 3, 'nodes with key=1' );
 	is( $tree->put(1,4), 1, 'put returns first of duplicates' );
 	is( $tree->size, 3, 'size=3 after put' );
 	# Verify nodes are in a sane state
