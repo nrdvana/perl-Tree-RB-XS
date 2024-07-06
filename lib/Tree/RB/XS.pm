@@ -160,10 +160,6 @@ You may toggle this attribute after construction.
 C<lookup_updates_recent>
 
 Whether L</lookup> and L</get> methods automatically mark a node as the most recent.
-This defaults to false, so only 'put' marks a node recent.  Even when true, 'exists' does not
-mark a node as recent, nor do iterators, min_node, max_node, nth_node, newest_node or
-oldest_node, as it is assumed using those methods are more about inspecting the state of
-the tree than representing access patterns of important keys.
 
 =item *
 
@@ -243,6 +239,14 @@ data points vs. temporary ones that you might want to expire over time.
 See also: L</oldest_node>, L</newest_node>, L</recent_count>, L</iter_newer>, L</iter_older>,
 L</truncate_recent>, and Node methods L</newer>, L</older>, L</mark_newest>,
 and L</recent_tracked>.
+
+=head2 lookup_updates_recent
+
+Whether L</lookup> and L</get> methods automatically mark a node as the most recent.
+This defaults to false, so only 'put' methods (including insert) mark a node recent.
+Even when true, 'exists' does not mark a node as recent, nor do iterators, min_node, max_node,
+nth_node, newest_node or oldest_node, as it is assumed using those methods are more about
+inspecting the state of the tree than representing access patterns of important keys.
 
 =head2 key_type
 
