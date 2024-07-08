@@ -14,7 +14,7 @@ our @_key_types= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_BSTR KEY_
 our @_cmp_enum= qw( CMP_PERL CMP_INT CMP_FLOAT CMP_MEMCMP CMP_UTF8 CMP_NUMSPLIT );
 our @_lookup_modes= qw( GET_EQ GET_EQ_LAST GET_GT GET_LT GET_GE GET_LE GET_LE_LAST GET_NEXT GET_PREV
                         LUEQUAL LUGTEQ LULTEQ LUGREAT LULESS LUNEXT LUPREV );
-our @EXPORT_OK= (@_key_types, @_cmp_enum, @_lookup_modes);
+our @EXPORT_OK= (@_key_types, @_cmp_enum, @_lookup_modes, 'cmp_numsplit');
 our %EXPORT_TAGS= (
 	key_type => \@_key_types,
 	cmp      => \@_cmp_enum,
@@ -963,6 +963,14 @@ or
 
 If the C<key_type> is C<KEY_TYPE_BSTR> this will sort the string portions using
 C<memcmp>, else they are sorted with Perl's unicode-aware sort.
+
+=item cmp_numsplit
+
+  use Tree::RB::XS 'cmp_numsplit';
+  $cmp= cmp_numsplit('192.168.10.1', '192.168.4.255');
+
+You can export the comparison function I<itself>, for use elsewhere.  It's rather useful.
+Maybe it should be its own module?
 
 =back
 

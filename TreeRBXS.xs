@@ -1011,43 +1011,14 @@ static int TreeRBXS_cmp_memcmp(struct TreeRBXS *tree, struct TreeRBXS_item *a, s
 
 //#define DEBUG_NUMSPLIT(args...) warn(args)
 #define DEBUG_NUMSPLIT(args...)
-static int TreeRBXS_cmp_numsplit(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
-	const char *apos, *alim, *amark;
-	const char *bpos, *blim, *bmark;
-	size_t alen, blen;
-	bool a_utf8= false, b_utf8= false;
-	int cmp;
 
-	switch (tree->key_type) {
-	case KEY_TYPE_USTR:
-		a_utf8= b_utf8= true;
-	case KEY_TYPE_BSTR:
-		apos= a->keyunion.ckey; alim= apos + a->ckeylen;
-		bpos= b->keyunion.ckey; blim= bpos + b->ckeylen;
-		break;
-	case KEY_TYPE_ANY:
-	case KEY_TYPE_CLAIM:
-#if PERL_VERSION_LT(5,14,0)
-		// before 5.14, need to force both to utf8 if either are utf8
-		if (SvUTF8(a->keyunion.svkey) || SvUTF8(b->keyunion.svkey)) {
-			apos= SvPVutf8(a->keyunion.svkey, alen);
-			bpos= SvPVutf8(b->keyunion.svkey, blen);
-			a_utf8= b_utf8= true;
-		} else
-#else
-		// After 5.14, can compare utf8 with bytes without converting the buffer
-		a_utf8= SvUTF8(a->keyunion.svkey);
-		b_utf8= SvUTF8(b->keyunion.svkey);
-#endif		
-		{
-			apos= SvPV(a->keyunion.svkey, alen);
-			bpos= SvPV(b->keyunion.svkey, blen);
-		}
-		alim= apos + alen;
-		blim= bpos + blen;
-		break;
-	default: croak("BUG");
-	}
+static int cmp_numsplit(
+	const char *apos, const char *alim, bool a_utf8,
+	const char *bpos, const char *blim, bool b_utf8
+) {
+	const char *amark, *bmark;
+	size_t alen, blen;
+	int cmp;
 
 	DEBUG_NUMSPLIT("compare '%.*s' | '%.*s'", (int)(alim-apos), apos, (int)(blim-bpos), bpos);
 	while (apos < alim && bpos < blim) {
@@ -1119,6 +1090,46 @@ static int TreeRBXS_cmp_numsplit(struct TreeRBXS *tree, struct TreeRBXS_item *a,
 	if (apos < alim) { DEBUG_NUMSPLIT("a is longer '%.*s' = 1", (int)(alim-apos), apos); return 1; }
 	DEBUG_NUMSPLIT("identical");
 	return 0;
+}
+
+static int TreeRBXS_cmp_numsplit(struct TreeRBXS *tree, struct TreeRBXS_item *a, struct TreeRBXS_item *b) {
+	const char *apos, *alim, *amark;
+	const char *bpos, *blim, *bmark;
+	size_t alen, blen;
+	bool a_utf8= false, b_utf8= false;
+	int cmp;
+
+	switch (tree->key_type) {
+	case KEY_TYPE_USTR:
+		a_utf8= b_utf8= true;
+	case KEY_TYPE_BSTR:
+		apos= a->keyunion.ckey; alim= apos + a->ckeylen;
+		bpos= b->keyunion.ckey; blim= bpos + b->ckeylen;
+		break;
+	case KEY_TYPE_ANY:
+	case KEY_TYPE_CLAIM:
+#if PERL_VERSION_LT(5,14,0)
+		// before 5.14, need to force both to utf8 if either are utf8
+		if (SvUTF8(a->keyunion.svkey) || SvUTF8(b->keyunion.svkey)) {
+			apos= SvPVutf8(a->keyunion.svkey, alen);
+			bpos= SvPVutf8(b->keyunion.svkey, blen);
+			a_utf8= b_utf8= true;
+		} else
+#else
+		// After 5.14, can compare utf8 with bytes without converting the buffer
+		a_utf8= SvUTF8(a->keyunion.svkey);
+		b_utf8= SvUTF8(b->keyunion.svkey);
+#endif		
+		{
+			apos= SvPV(a->keyunion.svkey, alen);
+			bpos= SvPV(b->keyunion.svkey, blen);
+		}
+		alim= apos + alen;
+		blim= bpos + blen;
+		break;
+	default: croak("BUG");
+	}
+	return cmp_numsplit(apos, alim, a_utf8, bpos, blim, b_utf8);
 }
 
 // Compare SV items using Perl's 'cmp' operator
@@ -2073,6 +2084,35 @@ DELETE(tree, key)
 			ST(0)= &PL_sv_undef;
 		}
 		XSRETURN(1);
+
+IV
+cmp_numsplit(key_a, key_b)
+	SV *key_a
+	SV *key_b
+	INIT:
+		const char *apos, *bpos;
+		STRLEN alen, blen;
+		bool a_utf8= false, b_utf8= false;
+	CODE:
+#if PERL_VERSION_LT(5,14,0)
+		// before 5.14, need to force both to utf8 if either are utf8
+		if (SvUTF8(key_a) || SvUTF8(key_b)) {
+			apos= SvPVutf8(key_a, alen);
+			bpos= SvPVutf8(key_b, blen);
+			a_utf8= b_utf8= true;
+		} else
+#else
+		// After 5.14, can compare utf8 with bytes without converting the buffer
+		a_utf8= SvUTF8(key_a);
+		b_utf8= SvUTF8(key_b);
+#endif		
+		{
+			apos= SvPV(key_a, alen);
+			bpos= SvPV(key_b, blen);
+		}
+		RETVAL= cmp_numsplit(apos, apos+alen, a_utf8, bpos, bpos+blen, b_utf8);
+	OUTPUT:
+		RETVAL
 
 #-----------------------------------------------------------------------------
 #  Node Methods
