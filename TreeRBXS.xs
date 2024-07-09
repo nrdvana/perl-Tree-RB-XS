@@ -1709,72 +1709,77 @@ get(tree, key, mode_sv= NULL)
 	SV *key
 	SV *mode_sv
 	ALIAS:
-		Tree::RB::XS::lookup           = 0
-		Tree::RB::XS::get              = 1
-		Tree::RB::XS::get_node         = 2
-		Tree::RB::XS::get_node_last    = 3
-		Tree::RB::XS::get_node_le      = 4
-		Tree::RB::XS::get_node_le_last = 5
-		Tree::RB::XS::get_node_lt      = 6
-		Tree::RB::XS::get_node_gt      = 7
-		Tree::RB::XS::get_node_ge      = 8
-		Tree::RB::XS::FETCH            = 9
+		Tree::RB::XS::get_node         = 0x00
+		Tree::RB::XS::get_key          = 0x01
+		Tree::RB::XS::FETCH            = 0x02
+		Tree::RB::XS::lookup           = 0x03
+		Tree::RB::XS::get              = 0x04
+		Tree::RB::XS::get_node_ge      = 0x10
+		Tree::RB::XS::get_key_ge       = 0x11
+		Tree::RB::XS::get_node_le      = 0x20
+		Tree::RB::XS::get_key_le       = 0x21
+		Tree::RB::XS::get_node_gt      = 0x30
+		Tree::RB::XS::get_key_gt       = 0x31
+		Tree::RB::XS::get_node_lt      = 0x40
+		Tree::RB::XS::get_key_lt       = 0x41
+		Tree::RB::XS::get_node_last    = 0x70
+		Tree::RB::XS::get_node_le_last = 0x80
 	INIT:
 		struct TreeRBXS_item stack_item, *item;
-		int mode= 0;
+		int mode= 0, n= 0;
 	PPCODE:
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
-		switch (ix) {
-		// In "full compatibility mode", 'get' is identical to 'lookup'
-		case 1:
-			if (tree->compat_list_get) {
-				ix= 0;
-		// In scalar context, lookup is identical to 'get'
-		case 0: if (GIMME_V == G_SCALAR) ix= 1;
-			}
-		case 2:
+		// Extract the comparison enum from ix, or read it from mode_sv
+		if (ix >> 4) {
+			mode= (ix >> 4);
+			ix &= 0xF;
+			if (mode_sv)
+				croak("extra get-mode argument");
+		} else {
 			mode= mode_sv? parse_lookup_mode(mode_sv) : GET_EQ;
 			if (mode < 0)
 				croak("Invalid lookup mode %s", SvPV_nolen(mode_sv));
-			break;
-		case 3: mode= GET_EQ_LAST; if (0)
-		case 4: mode= GET_LE;      if (0)
-		case 5: mode= GET_LE_LAST; if (0)
-		case 6: mode= GET_LT;      if (0)
-		case 7: mode= GET_GT;      if (0)
-		case 8: mode= GET_GE;
-			if (mode_sv) croak("extra get-mode argument");
-			ix= 2;
-			break;
-		case 9: ix= 1; break; // FETCH should always return a single value
 		}
+		// In "full compatibility mode", 'get' is identical to 'lookup' and depends on list context.
+		// In scalar context, they both become the same as FETCH
+		if (ix >= 3)
+			ix= (GIMME_V == G_SCALAR || (ix == 4 && !tree->compat_list_get))? 2 : 3;
+		// From here,
+		//  ix = 0 : return node
+		//  ix = 1 : return key
+		//  ix = 2 : return value
+		//  ix = 3 : return (value, node)
+
 		// create a fake item to act as a search key
 		TreeRBXS_init_tmp_item(&stack_item, tree, key, &PL_sv_undef);
 		item= TreeRBXS_find_item(tree, &stack_item, mode);
 		if (item) {
 			if (tree->lookup_updates_recent)
 				TreeRBXS_recent_insert_before(tree, item, &tree->recent);
-			if (ix == 0) { // lookup in list context
+			if (GIMME_V == G_VOID)
+				n= 0;
+			else if (ix <= 1) {
+				if (ix == 0) { // return node
+					ST(0)= sv_2mortal(TreeRBXS_wrap_item(item));
+					n= 1;
+				} else {       // return key
+					ST(0)= sv_2mortal(TreeRBXS_item_wrap_key(item));
+					n= 1;
+				}
+			} else if (ix == 2) { // return value
+				ST(0)= item->value;
+				n= 1;
+			} else {              // return (value, node)
 				ST(0)= item->value;
 				ST(1)= sv_2mortal(TreeRBXS_wrap_item(item));
-				XSRETURN(2);
-			} else if (ix == 1) { // get, or lookup in scalar context
-				ST(0)= item->value;
-				XSRETURN(1);
-			} else { // get_node
-				ST(0)= sv_2mortal(TreeRBXS_wrap_item(item));
-				XSRETURN(1);
+				n= 2;
 			}
 		} else {
-			if (ix == 0) { // lookup in list context
-				XSRETURN(0);
-			}
-			else {
-				ST(0)= &PL_sv_undef;
-				XSRETURN(1);
-			}
+			ST(0)= &PL_sv_undef;
+			n= (ix == 3)? 0 : 1; // empty list, else single undef
 		}
+		XSRETURN(n);
 
 void
 get_all(tree, key)

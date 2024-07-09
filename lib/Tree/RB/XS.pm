@@ -390,6 +390,26 @@ Aliases with built-in mode constants:
 
 =back
 
+=head2 get_key
+
+Returns the key closest to the comparison criteria.  This is a shortcut for
+C<< get_node(...)->key >> but avoids the C<undef> check and avoids inflating the tree node
+to a perl object.
+
+Aliases with built-in mode constants:
+
+=over 20
+
+=item get_key_le
+
+=item get_key_lt
+
+=item get_key_ge
+
+=item get_key_gt
+
+=back
+
 =head2 get_all
 
   my @values= $tree->get_all($key);
