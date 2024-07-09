@@ -37,7 +37,7 @@ subtest no_duplicates => sub {
 		my ($mode, $key, $val)= @$_;
 		is( scalar $tree->lookup($key, $mode), $val, "$mode $key" );
 		is( [ $tree->lookup($key, $mode) ],
-		    [ $val, object { call key => $val; call value => $val } ],
+		    [ defined $val? ($val, object { call key => $val; call value => $val }) : () ],
 		    "$mode $key list context"
 		);
 	}

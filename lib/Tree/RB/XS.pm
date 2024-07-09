@@ -13,7 +13,7 @@ use Exporter 'import';
 our @_key_types= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_BSTR KEY_TYPE_USTR );
 our @_cmp_enum= qw( CMP_PERL CMP_INT CMP_FLOAT CMP_MEMCMP CMP_UTF8 CMP_NUMSPLIT );
 our @_lookup_modes= qw( GET_EQ GET_EQ_LAST GET_GT GET_LT GET_GE GET_LE GET_LE_LAST GET_NEXT GET_PREV
-                        LUEQUAL LUGTEQ LULTEQ LUGREAT LULESS LUNEXT LUPREV );
+                        GET_OR_ADD LUEQUAL LUGTEQ LULTEQ LUGREAT LULESS LUNEXT LUPREV );
 our @EXPORT_OK= (@_key_types, @_cmp_enum, @_lookup_modes, 'cmp_numsplit');
 our %EXPORT_TAGS= (
 	key_type => \@_key_types,
@@ -364,7 +364,16 @@ an alias for C<lookup>.
 
 Mode can be used to indicate something other than an exact match:
 L</GET_EQ>, L</GET_EQ_LAST>, L</GET_LE>, L</GET_LE_LAST>, L</GET_LT>, L</GET_GE>, L</GET_GT>.
-(described below)
+(described below)  It can also be L</GET_OR_ADD> to automatically create a node with the key
+if one didn't exist.
+
+Aliases with built-in mode constants:
+
+=over 20
+
+=item get_or_add
+
+=back
 
 =head2 get_node
 
@@ -1046,6 +1055,14 @@ Has alias C<LUEQUAL> to match Tree::RB.
 
 Same as C<GET_EQ>, but if duplicate keys are enabled, this specifies the right-most match
 (most recently inserted).
+
+=item GET_OR_ADD
+
+Look up the key, and if it doesn't exist, insert a node for it into the tree.
+When getting the value, this provides an lvalue which you can assign to.
+
+  ++($tree->get("a", GET_OR_ADD) //= 0);
+  ($tree->get("b", GET_OR_ADD) //= '') .= "example";
 
 =item GET_GE
 

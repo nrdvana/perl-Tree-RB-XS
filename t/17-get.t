@@ -84,4 +84,30 @@ subtest get_all => sub {
 	is( [ $tree->get_all(5) ], [qw( 5 X5 X4 X3 X2 X1 )], 'all values, in insertion order' );
 };
 
+subtest get_or_add => sub {
+	my $tree= Tree::RB::XS->new;
+	{ no warnings 'uninitialized';
+		$_ .= "example" for $tree->get("b", GET_OR_ADD);
+		++$_ for $tree->get("a", GET_OR_ADD);
+		($_ ||= 5) for $tree->get("a", GET_OR_ADD);
+		is( [$tree->iter->next_kv('*')], [ a => 1, b => "example" ] );
+	}
+
+	# again with actual lval syntax
+	$tree= Tree::RB::XS->new;
+	{ no warnings 'uninitialized';
+		$tree->get("b", GET_OR_ADD) .= "example";
+		++$tree->get("a", GET_OR_ADD);
+	}
+	is( [$tree->iter->next_kv('*')], [ a => 1, b => "example" ] );
+
+	# again with alias method 'get_or_add'
+	$tree= Tree::RB::XS->new;
+	{ no warnings 'uninitialized';
+		$tree->get_or_add("b") .= "example";
+		$tree->get_or_add("a")++;
+	}
+	is( [$tree->iter->next_kv('*')], [ a => 1, b => "example" ] );
+};
+
 done_testing;

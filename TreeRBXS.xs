@@ -138,7 +138,8 @@ static const char * get_cmp_name(int cmp_id) {
 #define GET_PREV 6
 #define GET_EQ_LAST 7
 #define GET_LE_LAST 8
-#define GET_MAX  8
+#define GET_OR_ADD 9
+#define GET_MAX  9
 
 static int parse_lookup_mode(SV *mode_sv) {
 	int mode;
@@ -181,18 +182,10 @@ static int parse_lookup_mode(SV *mode_sv) {
 		          break;
 		case 'P': case 'p': mode= foldEQ(mode_str, "PREV", 4)? GET_PREV : -1; break;
 		case 'N': case 'n': mode= foldEQ(mode_str, "NEXT", 4)? GET_NEXT : -1; break;
+		case 'o': case 'O': mode= foldEQ(mode_str, "OR_ADD", 6)? GET_OR_ADD : -1; break;
 		}
 	}
 	return mode;
-}
-
-#define EXPORT_ENUM(x) newCONSTSUB(stash, #x, new_enum_dualvar(x, newSVpvs_share(#x)))
-static SV * new_enum_dualvar(IV ival, SV *name) {
-	SvUPGRADE(name, SVt_PVNV);
-	SvIV_set(name, ival);
-	SvIOK_on(name);
-	SvREADONLY_on(name);
-	return name;
 }
 
 struct dllist_node {
@@ -767,44 +760,87 @@ static void TreeRBXS_destroy(struct TreeRBXS *tree) {
 		TreeRBXS_iter_free(tree->hashiter);
 }
 
-static struct TreeRBXS_item *TreeRBXS_find_item(struct TreeRBXS *tree, struct TreeRBXS_item *key, int mode) {
-	rbtree_node_t *first, *last;
+// This gets used in two places, but I don't want to make it a function.
+#define TREERBXS_INSERT_ITEM_AT_NODE(tree, item, parent_node, direction) \
+	do { \
+		if (!(parent_node)) /* empty tree */ \
+			rbtree_node_insert_before(&(tree)->root_sentinel, &(item)->rbnode); \
+		else if ((direction) > 0) \
+			rbtree_node_insert_after((parent_node), &(item)->rbnode); \
+		else \
+			rbtree_node_insert_before((parent_node), &(item)->rbnode); \
+		if ((tree)->track_recent) \
+			TreeRBXS_recent_insert_before((tree), (item), &(tree)->recent); \
+	} while (0)
+
+static struct TreeRBXS_item *TreeRBXS_find_item(struct TreeRBXS *tree, struct TreeRBXS_item *stack_item, int mode) {
+	struct TreeRBXS_item *item;
 	rbtree_node_t *node= NULL;
+	int cmp;
+	bool step= false;
 
 	// Need to ensure we find the *first* matching node for a key,
 	// to deal with the case of duplicate keys.
-	if (rbtree_find_all(
+	node= rbtree_find_nearest(
 		&tree->root_sentinel,
-		key,
+		stack_item, // The item *is* the key that gets passed to the compare function
 		(int(*)(void*,void*,void*)) tree->compare,
 		tree, -OFS_TreeRBXS_item_FIELD_rbnode,
-		&first, &last, NULL)
-	) {
+		&cmp);
+	if (node && cmp == 0) {
 		// Found an exact match.  First and last are the range of nodes matching.
 		switch (mode) {
-		case GET_EQ:
-		case GET_GE:
-		case GET_LE: node= first; break;
-		case GET_EQ_LAST:
-		case GET_LE_LAST: node= last; break;
 		case GET_LT:
-		case GET_PREV: node= rbtree_node_prev(first); break;
+		case GET_PREV:
+			step= true;
+		case GET_EQ:
+		case GET_OR_ADD:
+		case GET_GE:
+		case GET_LE:
+			// make sure it is the first of nodes with same key
+			if (tree->allowed_duplicates)
+				node= rbtree_find_leftmost_samekey(node, (int(*)(void*,void*,void*)) tree->compare,
+					tree, -OFS_TreeRBXS_item_FIELD_rbnode);
+			if (step)
+				node= rbtree_node_prev(node);
+			break;
 		case GET_GT:
-		case GET_NEXT: node= rbtree_node_next(last); break;
+		case GET_NEXT:
+			step= true;
+		case GET_EQ_LAST:
+		case GET_LE_LAST:
+			// make sure it is the last of nodes with same key
+			if (tree->allowed_duplicates)
+				node= rbtree_find_rightmost_samekey(node, (int(*)(void*,void*,void*)) tree->compare,
+					tree, -OFS_TreeRBXS_item_FIELD_rbnode);
+			if (step)
+				node= rbtree_node_next(node);
+			break;
 		default: croak("BUG: unhandled mode");
 		}
 	} else {
 		// Didn't find an exact match.  First and last are the bounds of what would have matched.
 		switch (mode) {
 		case GET_EQ:
-		case GET_EQ_LAST: node= NULL; break;
+		case GET_EQ_LAST:
+		case GET_PREV:
+		case GET_NEXT:
+			node= NULL; break;
 		case GET_GE:
-		case GET_GT: node= last; break;
+		case GET_GT:
+			if (node && cmp > 0)
+				node= rbtree_node_next(node);
+			break;
 		case GET_LE:
 		case GET_LE_LAST:
-		case GET_LT: node= first; break;
-		case GET_PREV:
-		case GET_NEXT: node= NULL; break;
+		case GET_LT:
+			if (node && cmp < 0)
+				node= rbtree_node_prev(node);
+			break;
+		case GET_OR_ADD:
+			item= TreeRBXS_new_item_from_tmp_item(stack_item);
+			TREERBXS_INSERT_ITEM_AT_NODE(tree, item, node, cmp);
+			return item;
 		default: croak("BUG: unhandled mode");
 		}
 	}
@@ -891,13 +927,8 @@ TreeRBXS_insert_item(struct TreeRBXS *tree, struct TreeRBXS_item *stack_item, bo
 				TreeRBXS_recent_insert_before(tree, item, &tree->recent);
 			tree->prev_inserted_dup= false;
 		} else if (tree->allow_duplicates) {
-			if (!rbtree_find_all(
-				hint, stack_item,
-				(int(*)(void*,void*,void*)) tree->compare,
-				tree, -OFS_TreeRBXS_item_FIELD_rbnode,
-				NULL, &hint, NULL)
-				)
-				croak("BUG");
+			hint= rbtree_find_rightmost_samekey(hint, (int(*)(void*,void*,void*)) tree->compare,
+				tree, -OFS_TreeRBXS_item_FIELD_rbnode);
 			insert_new_duplicate:
 			item= TreeRBXS_new_item_from_tmp_item(stack_item);
 			rbtree_node_insert_after(hint, &item->rbnode);
@@ -913,16 +944,8 @@ TreeRBXS_insert_item(struct TreeRBXS *tree, struct TreeRBXS_item *stack_item, bo
 	}
 	else {
 		insert_relative:
-		// return false means first is the preceeding node and last is the following node.
 		item= TreeRBXS_new_item_from_tmp_item(stack_item);
-		if (!hint) // empty tree
-			rbtree_node_insert_before(&tree->root_sentinel, &item->rbnode);
-		else if (cmp > 0)
-			rbtree_node_insert_after(hint, &item->rbnode);
-		else
-			rbtree_node_insert_before(hint, &item->rbnode);
-		if (tree->track_recent)
-			TreeRBXS_recent_insert_before(tree, item, &tree->recent);
+		TREERBXS_INSERT_ITEM_AT_NODE(tree, item, hint, cmp);
 		tree->prev_inserted_dup= false;
 	}
 	// If trend logic is triggered above, this is already calculated.  Else check adjacency.
@@ -1400,6 +1423,25 @@ static struct TreeRBXS_iter* TreeRBXS_get_magic_iter(SV *obj, int flags) {
 	return NULL;
 }
 
+#define FUNCTION_IS_LVALUE(x) function_is_lvalue(aTHX_ stash, #x)
+static void function_is_lvalue(pTHX_ HV *stash, const char *name) {
+	CV *method_cv;
+	GV *method_gv;
+	if (!(method_gv= gv_fetchmethod(stash, name))
+		|| !(method_cv= GvCV(method_gv)))
+		croak("Missing method %s", name);
+	CvLVALUE_on(method_cv);
+}
+
+#define EXPORT_ENUM(x) newCONSTSUB(stash, #x, new_enum_dualvar(aTHX_ x, newSVpvs_share(#x)))
+static SV * new_enum_dualvar(pTHX_ IV ival, SV *name) {
+	SvUPGRADE(name, SVt_PVNV);
+	SvIV_set(name, ival);
+	SvIOK_on(name);
+	SvREADONLY_on(name);
+	return name;
+}
+
 /*----------------------------------------------------------------------------
  * Tree Methods
  */
@@ -1493,7 +1535,7 @@ key_type(tree)
 	INIT:
 		int kt= tree->key_type;
 	PPCODE:
-		ST(0)= sv_2mortal(new_enum_dualvar(kt, newSVpv(get_key_type_name(kt), 0)));
+		ST(0)= sv_2mortal(new_enum_dualvar(aTHX_ kt, newSVpv(get_key_type_name(kt), 0)));
 		XSRETURN(1);
 
 void
@@ -1503,7 +1545,7 @@ compare_fn(tree)
 		int id= tree->compare_fn_id;
 	PPCODE:
 		ST(0)= id == CMP_SUB? tree->compare_callback
-			: sv_2mortal(new_enum_dualvar(id, newSVpv(get_cmp_name(id), 0)));
+			: sv_2mortal(new_enum_dualvar(aTHX_ id, newSVpv(get_cmp_name(id), 0)));
 		XSRETURN(1);
 
 void
@@ -1724,6 +1766,7 @@ get(tree, key, mode_sv= NULL)
 		Tree::RB::XS::get_key_lt       = 0x41
 		Tree::RB::XS::get_node_last    = 0x70
 		Tree::RB::XS::get_node_le_last = 0x80
+		Tree::RB::XS::get_or_add       = 0x92
 	INIT:
 		struct TreeRBXS_item stack_item, *item;
 		int mode= 0, n= 0;
@@ -2565,7 +2608,17 @@ delete(iter)
 #
 
 BOOT:
-	HV* stash= gv_stashpvn("Tree::RB::XS", 12, 1);
+	CV *method_cv;
+	GV *method_gv;
+	int i;
+	HV *stash= gv_stashpvn("Tree::RB::XS::Node", 18, 1);
+	FUNCTION_IS_LVALUE(value);
+	
+	stash= gv_stashpvn("Tree::RB::XS", 12, 1);
+	FUNCTION_IS_LVALUE(get);
+	FUNCTION_IS_LVALUE(get_or_add);
+	FUNCTION_IS_LVALUE(FETCH);
+	FUNCTION_IS_LVALUE(lookup);
 	EXPORT_ENUM(KEY_TYPE_ANY);
 	EXPORT_ENUM(KEY_TYPE_INT);
 	EXPORT_ENUM(KEY_TYPE_FLOAT);
@@ -2579,6 +2632,7 @@ BOOT:
 	EXPORT_ENUM(CMP_MEMCMP);
 	EXPORT_ENUM(CMP_NUMSPLIT);
 	EXPORT_ENUM(GET_EQ);
+	EXPORT_ENUM(GET_OR_ADD);
 	EXPORT_ENUM(GET_EQ_LAST);
 	EXPORT_ENUM(GET_GE);
 	EXPORT_ENUM(GET_LE);
