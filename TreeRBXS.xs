@@ -1034,9 +1034,6 @@ static int TreeRBXS_cmp_memcmp(struct TreeRBXS *tree, struct TreeRBXS_item *a, s
 	return cmp? cmp : alen < blen? -1 : alen > blen? 1 : 0;
 }
 
-//#define DEBUG_NUMSPLIT(args...) warn(args)
-#define DEBUG_NUMSPLIT(args...)
-
 static int cmp_numsplit(
 	const char *apos, const char *alim, bool a_utf8,
 	const char *bpos, const char *blim, bool b_utf8
@@ -1045,7 +1042,6 @@ static int cmp_numsplit(
 	size_t alen, blen;
 	int cmp;
 
-	DEBUG_NUMSPLIT("compare '%.*s' | '%.*s'", (int)(alim-apos), apos, (int)(blim-bpos), bpos);
 	while (apos < alim && bpos < blim) {
 		// Step forward as long as both strings are identical
 		while (apos < alim && bpos < blim && *apos == *bpos && !isdigit(*apos))
@@ -1061,21 +1057,21 @@ static int cmp_numsplit(
 		if (alen || blen) {
 			// If one of the non-digit spans was length=0, then we are comparing digits (or EOF)
 			// with string, and digits sort first.
-			if (alen == 0) { DEBUG_NUMSPLIT("a EOF or digit, b has chars, -1"); return -1; }
-			if (blen == 0) { DEBUG_NUMSPLIT("b EOF or digit, a has chars, 1");  return  1; }
+			if (alen == 0) return -1;
+			if (blen == 0) return  1;
 			// else compare the portions in common.
 #if PERL_VERSION_GE(5,14,0)
 			if (a_utf8 != b_utf8) {
 				cmp= a_utf8? -bytes_cmp_utf8((const U8*) bmark, blen, (const U8*) amark, alen)
 					: bytes_cmp_utf8((const U8*) amark, alen, (const U8*) bmark, blen);
-				if (cmp) { DEBUG_NUMSPLIT("bytes_cmp_utf8('%.*s','%.*s')= %d", (int)alen, amark, (int)blen, bmark, cmp); return cmp; }
+				if (cmp) return cmp;
 			} else
 #endif
 			{
 				cmp= memcmp(amark, bmark, alen < blen? alen : blen);
-				if (cmp) { DEBUG_NUMSPLIT("memcmp('%.*s','%.*s') = %d", (int)alen, amark, (int)blen, bmark, cmp); return cmp; }
-				if (alen < blen) { DEBUG_NUMSPLIT("alen < blen = -1"); return -1; }
-				if (alen > blen) { DEBUG_NUMSPLIT("alen > blen = 1"); return -1; }
+				if (cmp) return cmp;
+				if (alen < blen) return -1;
+				if (alen > blen) return -1;
 			}
 		}
 		// If one of the strings ran out of characters, it is the lesser one.
@@ -1092,8 +1088,8 @@ static int cmp_numsplit(
 		// If there are more digits to consider beyond the first mismatch (or EOF) then need to
 		// find the end of the digits and see which number was longer.
 		if ((apos < alim && isdigit(*apos)) || (bpos < blim && isdigit(*bpos))) {
-			if (apos == alim) { DEBUG_NUMSPLIT("b has more digits = -1"); return -1; }
-			if (bpos == blim) { DEBUG_NUMSPLIT("a has more digits = 1"); return 1; }
+			if (apos == alim) return -1;
+			if (bpos == blim) return 1;
 			// If the strings happen to be the same length, this will be the deciding character
 			cmp= *apos - *bpos;
 			// find the end of digits
@@ -1102,18 +1098,16 @@ static int cmp_numsplit(
 			// Whichever number is longer is greater
 			alen= apos - amark;
 			blen= bpos - bmark;
-			if (alen < blen) { DEBUG_NUMSPLIT("b numerically greater = -1"); return -1; }
-			if (alen > blen) { DEBUG_NUMSPLIT("a numerically greater = 1"); return 1; }
+			if (alen < blen) return -1;
+			if (alen > blen) return 1;
 			// Else they're the same length, and the 'cmp' captured earlier is the answer.
-			DEBUG_NUMSPLIT("%.*s <=> %.*s = %d", (int)alen, amark, (int)blen, bmark, cmp);
 			return cmp;
 		}
 		// Else they're equal, continue to the next component.
 	}
 	// One or both of the strings ran out of characters
-	if (bpos < blim) { DEBUG_NUMSPLIT("b is longer '%.*s' = -1", (int)(blim-bpos), bpos); return -1; }
-	if (apos < alim) { DEBUG_NUMSPLIT("a is longer '%.*s' = 1", (int)(alim-apos), apos); return 1; }
-	DEBUG_NUMSPLIT("identical");
+	if (bpos < blim) return -1;
+	if (apos < alim) return 1;
 	return 0;
 }
 

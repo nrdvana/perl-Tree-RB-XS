@@ -357,6 +357,8 @@ Alias: C<newest>
 
   my $val= $tree->get($key);
              ...->get($key, $mode);
+  
+  $tree->get($key) += 5;   # also, they're lvalues
 
 Fetch a value from the tree, by its key.  Unlike L<Tree::RB/get>, this returns a single
 value, regardless of list context.  But, you can set L<compat_list_get> to make C<get>
@@ -372,6 +374,8 @@ Aliases with built-in mode constants:
 =over 20
 
 =item get_or_add
+
+Handy for things like C<< ( $tree->get_or_add($key) //= '') .= "test" >>
 
 =back
 
@@ -504,7 +508,7 @@ that you do want removed.
   my @nodes= $tree->truncate_recent($max_count);
 
 Reduce the number of "recent" nodes (those with insertion-order tracking enabled) to
-C<$max_count>.  (See L</track_recent>)  Every pruned node is returned as a list.
+C<$max_count>.  (See L</track_recent>)  The pruned nodes are returned as a list.
 
 The intent here is that you may have some "permanent" nodes that stay in the tree, but more
 transient ones that you add on demand, and then you might want to purge the oldest of those
