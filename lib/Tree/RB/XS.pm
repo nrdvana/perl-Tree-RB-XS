@@ -209,21 +209,14 @@ keys replace the values of earlier ones).
 =cut
 
 sub new {
-	my $class= shift;
-	my %options= @_ == 1 && ref $_[0] eq 'HASH'? %{$_[0]}
-		: @_ == 1? ( compare_fn => $_[0] )
-		: @_;
-	my $self= bless \%options, $class;
-	$self->_init_tree(delete $self->{key_type}, delete $self->{compare_fn});
-	$self->allow_duplicates(1) if delete $self->{allow_duplicates};
-	$self->compat_list_get(1) if delete $self->{compat_list_get};
-	$self->track_recent(1) if delete $self->{track_recent};
-	$self->lookup_updates_recent(1) if delete $self->{lookup_updates_recent};
-	if (my $kv= $self->{kv}) {
-		$self->allow_duplicates? $self->insert_multi($kv)
-			: $self->put_multi($kv);
+	if (@_ == 2) {
+		if (ref $_[1] eq 'HASH') {
+			splice(@_, 1, 1, %{$_[1]});
+		} else {
+			splice(@_, 1, 0, 'compare_fn');
+		}
 	}
-	$self;
+	goto \&_init_tree;
 }
 
 =head1 ATTRIBUTES
