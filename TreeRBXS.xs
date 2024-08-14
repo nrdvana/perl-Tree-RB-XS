@@ -12,6 +12,9 @@ struct TreeRBXS_item;
 #define AUTOCREATE 1
 #define OR_DIE 2
 
+/* These get serialized as bytes for Storable, so should not change,
+ * or else STORABLE_thaw needs adapted.
+ */
 #define KEY_TYPE_ANY   1
 #define KEY_TYPE_CLAIM 2
 #define KEY_TYPE_INT   3
@@ -79,6 +82,9 @@ static TreeRBXS_cmp_fn TreeRBXS_cmp_numsplit;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_perl;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_perl_cb;
 
+/* These get serialized as bytes for Storable, so should not change,
+ * or else STORABLE_thaw needs adapted.
+ */
 #define CMP_PERL    1
 #define CMP_INT     2
 #define CMP_FLOAT   3
@@ -317,6 +323,9 @@ static void TreeRBXS_init(struct TreeRBXS *tree, SV *owner) {
 	rbtree_init_tree(&tree->root_sentinel, &tree->leaf_sentinel);
 	tree->recent.next= &tree->recent;
 	tree->recent.prev= &tree->recent;
+	/* defaults, which can be overridden by _init_tree */
+	tree->key_type= KEY_TYPE_ANY;
+	tree->compare_fn_id= CMP_PERL;
 }
 
 static void TreeRBXS_clear(struct TreeRBXS *tree) {
@@ -1461,10 +1470,261 @@ static SV * new_enum_dualvar(pTHX_ IV ival, SV *name) {
 	return name;
 }
 
-static AV* cast_av_or_die(SV *sv, const char *context) {
-	if (!SvOK(sv) || !SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVAV)
-		croak("Expected arrayref for %s", context);
-	return (AV*) SvRV(sv);
+/* Return an SV array of an arrayref. 
+ * Returns NULL if it wasn't an arrayref.
+ */
+static SV** unpack_array(SV *array, ssize_t *len) {
+	AV *av;
+	SV **vec;
+	ssize_t n;
+	if (array && SvTYPE(array) == SVt_PVAV)
+		av= (AV*) array;
+	else if (array && SvROK(array) && SvTYPE(SvRV(array)) == SVt_PVAV)
+		av= (AV*) SvRV(array);
+	else
+		return NULL;
+	n= av_len(av) + 1;
+	vec= AvARRAY(av);
+	/* tied arrays and non-allocated empty arrays return NULL */
+	if (!vec) {
+		if (n == 0) /* don't return a NULL for an empty array, but doesn't need to be a real pointer */
+			vec= (SV**) 8;
+		else {
+			/* in case of a tied array, extract the elements into a temporary buffer */
+			ssize_t i;
+			Newx(vec, n, SV*);
+			SAVEFREEPV(vec);
+			for (i= 0; i < n; i++) {
+				SV **el= av_fetch(av, i, 0);
+				vec[i]= el? *el : NULL;
+			}
+		}
+	}
+	if (len) *len= n;
+	return vec;
+}
+
+/* Initialize a new tree from settings in a list of perl SVs
+ *
+ * This functions expects that 'tree' has been suitably initialized so that if an attribute
+ * does not occur in the list, it has already received a sensible default value.
+ * The attr_list is assumed to be an array of mortal SVs such that they can be re-ordered
+ * or removed freely, so that _init_tree can return the list of un-consumed attributes.
+ * This means that attr_list should *NOT* be AvARRAY of an AV.
+ * Returns the number of unknown attributes, which have been re-packed in the list.
+ */
+ssize_t init_tree_from_attr_list(
+	struct TreeRBXS *tree,
+	SV **attr_list,
+	ssize_t attr_list_len
+) {
+	ssize_t i, out_i;
+	SV *key_type_sv= NULL,
+	   *compare_fn_sv= NULL,
+	   *kv_sv= NULL,
+	   *keys_sv= NULL,
+	   *values_sv= NULL,
+	   *recent_sv= NULL,
+	   *hashiter_sv= NULL,
+	   *tmpsv;
+	int key_type;
+	SSize_t nodecount= 0;
+	struct TreeRBXS_item *item, stack_item;
+	rbtree_node_t *node;
+
+	/* Begin iterating arguments, and store the SVs we know in variables, and put the
+	 * rest into the object hash. */
+	for (i= out_i= 0; i < attr_list_len; i += 2) {
+		SV *key= attr_list[i], *val;
+		STRLEN len;
+		const char *attrname= SvPV(key, len);
+		/* every attribute needs a value */
+		if (i + 1 == attr_list_len)
+			croak("No value provided for %s", attrname);
+		val= attr_list[i+1];
+		if (!SvOK(val))
+			val= NULL; /* prefer NULLs for unset attributes */
+		switch (len) {
+		case  2: if (strcmp("kv", attrname) == 0) { kv_sv= val; break; }
+			else goto keep_unknown;
+		case  4: if (strcmp("keys", attrname) == 0) { keys_sv= val; break; }
+			else goto keep_unknown;
+		case  6: if (strcmp("values", attrname) == 0) { values_sv= val; break; }
+			else if (strcmp("recent", attrname) == 0) { recent_sv= val; break; }
+			else goto keep_unknown;
+		case  8: if (strcmp("key_type", attrname) == 0) { key_type_sv= val; break; }
+			else if (strcmp("hashiter", attrname) == 0) { hashiter_sv= val; break; }
+			else goto keep_unknown;
+		case 10: if (strcmp("compare_fn", attrname) == 0) { compare_fn_sv= val; break; }
+			else goto keep_unknown;
+		case 12: if (strcmp("track_recent", attrname) == 0) { tree->track_recent= val && SvTRUE(val); break; }
+			else goto keep_unknown;
+		case 15: if (strcmp("compat_list_get", attrname) == 0) { tree->compat_list_get= val && SvTRUE(val); break; }
+			else goto keep_unknown;
+		case 16: if (strcmp("allow_duplicates", attrname) == 0) { tree->allow_duplicates= val && SvTRUE(val); break; }
+			else goto keep_unknown;
+		case 21: if (strcmp("lookup_updates_recent", attrname) == 0) { tree->lookup_updates_recent= val && SvTRUE(val); break; }
+		default: keep_unknown:
+			/* unknown attribute.  Re-pack it into the list */
+			if (i > out_i) {
+				attr_list[out_i]=   attr_list[i];
+				attr_list[out_i+1]= attr_list[i+1];
+			}
+			out_i += 2;
+		}
+	}
+
+	// parse key type and compare_fn
+	if (key_type_sv) {
+		key_type= parse_key_type(key_type_sv);
+		if (key_type < 0)
+			croak("invalid key_type %s", SvPV_nolen(key_type_sv));
+		tree->key_type= key_type;
+	}
+	else key_type= tree->key_type;
+	
+	if (compare_fn_sv) {
+		int cmp_id= parse_cmp_fn(compare_fn_sv);
+		if (cmp_id < 0)
+			croak("invalid compare_fn %s", SvPV_nolen(compare_fn_sv));
+		tree->compare_fn_id= cmp_id;
+	} else if (key_type_sv) {
+		tree->compare_fn_id=
+			  key_type == KEY_TYPE_INT?   CMP_INT
+			: key_type == KEY_TYPE_FLOAT? CMP_FLOAT
+			: key_type == KEY_TYPE_BSTR?  CMP_MEMCMP
+			: key_type == KEY_TYPE_USTR?  CMP_UTF8
+			: key_type == KEY_TYPE_ANY?   CMP_PERL /* use Perl's cmp operator */
+			: key_type == KEY_TYPE_CLAIM? CMP_PERL
+			: CMP_PERL;
+	}
+
+	switch (tree->compare_fn_id) {
+	case CMP_SUB:
+		if (!compare_fn_sv || !SvRV(compare_fn_sv) || SvTYPE(SvRV(compare_fn_sv)) != SVt_PVCV)
+			croak("Can't set compare_fn to CMP_SUB without supplying a coderef");
+		tree->compare_callback= compare_fn_sv;
+		SvREFCNT_inc(tree->compare_callback);
+		if (key_type != KEY_TYPE_CLAIM) tree->key_type= KEY_TYPE_ANY;
+		tree->compare= TreeRBXS_cmp_perl_cb;
+		break;
+	case CMP_UTF8:
+		tree->key_type= KEY_TYPE_USTR;
+		tree->compare= TreeRBXS_cmp_memcmp;
+		break;
+	case CMP_PERL:
+		if (key_type != KEY_TYPE_CLAIM) tree->key_type= KEY_TYPE_ANY;
+		tree->compare= TreeRBXS_cmp_perl;
+		break;
+	case CMP_INT:
+		tree->key_type= KEY_TYPE_INT;
+		tree->compare= TreeRBXS_cmp_int;
+		break;
+	case CMP_FLOAT:
+		tree->key_type= KEY_TYPE_FLOAT;
+		tree->compare= TreeRBXS_cmp_float;
+		break;
+	case CMP_MEMCMP:
+		tree->key_type= KEY_TYPE_BSTR;
+		tree->compare= TreeRBXS_cmp_memcmp;
+		break;
+	case CMP_NUMSPLIT:
+		if (key_type != KEY_TYPE_USTR && key_type != KEY_TYPE_ANY && key_type != KEY_TYPE_CLAIM)
+			tree->key_type= KEY_TYPE_BSTR;
+		tree->compare= TreeRBXS_cmp_numsplit;
+		break;
+	default:
+		croak("BUG: unhandled cmp_id");
+	}
+
+	/* if keys and/or values supplied... */
+	if (kv_sv || keys_sv || values_sv) {
+		SV **key_vec= NULL, **key_lim, **val_vec= NULL;
+		AV *av_tmp;
+		ssize_t i, num_kv, key_step= 0, val_step= 0;
+		bool track_recent= tree->track_recent;
+		
+		if (kv_sv) {
+			if (keys_sv || values_sv)
+				croak("'kv' cannot be specified at the same time as 'keys' or 'values'");
+			if (!(key_vec= unpack_array(kv_sv, &num_kv)))
+				croak("'kv' must be an arrayref");
+			if (num_kv & 1)
+				croak("Odd number of elements in 'kv' array");
+			num_kv >>= 1;
+			val_vec= key_vec+1;
+			key_step= val_step= 2;
+		}
+		if (keys_sv) {
+			if (!(key_vec= unpack_array(keys_sv, &num_kv)))
+				croak("'keys' must be an arrayref");
+			key_step= 1;
+		}
+		if (values_sv) {
+			ssize_t nvals;
+			if (!key_vec)
+				croak("'values' can't be specified without 'keys'");
+			if (!(val_vec= unpack_array(values_sv, &nvals)))
+				croak("'values' must be an arrayref");
+			if (nvals != num_kv)
+				croak("Length of 'values' array (%ld) does not match keys (%ld)", (long)nvals, (long)num_kv);
+			val_step= 1;
+		}
+		/* If recent list is about to be overwritten, don't track any insertions */
+		if (recent_sv)
+			tree->track_recent= false;
+		for (key_lim= key_vec + num_kv * key_step; key_vec < key_lim; key_vec += key_step, val_vec += val_step) {
+			if (!*key_vec || !SvOK(*key_vec))
+				croak("Can't use undef as a key");
+			TreeRBXS_init_tmp_item(&stack_item, tree, *key_vec, (val_vec? *val_vec : &PL_sv_undef));
+			TreeRBXS_insert_item(tree, &stack_item, !tree->allow_duplicates, NULL);
+		}
+		/* restore tracking setting */
+		tree->track_recent= track_recent;
+		/* might not equal num_kv if there were duplicates */
+		nodecount= TreeRBXS_get_count(tree);
+	}
+	/* user wants to initialize the linked list of track_recent */
+	if (recent_sv) {
+		ssize_t i, idx, n;
+		SV **rvec= unpack_array(recent_sv, &n);
+		if (!rvec) croak("'recent' must be an arrayref");
+		for (i= 0; i < n; i++) {
+			if (!rvec[i] || !SvOK(rvec[i]) || !looks_like_number(rvec[i])) // yes this ignores floating point mistakes...
+				croak("Elements of 'recent' must be integers");
+			idx= SvIV(rvec[i]);
+			if (idx < 0 || idx >= nodecount)
+				croak("Element in 'recent' (%ld) is out of bounds (0-%ld)", (long)idx, (long)(nodecount-1));
+			node= rbtree_node_child_at_index(TreeRBXS_get_root(tree), idx);
+			if (!node) croak("BUG: access node[idx]");
+			item= GET_TreeRBXS_item_FROM_rbnode(node);
+			TreeRBXS_recent_insert_before(tree, item, &tree->recent);
+		}
+	}
+	/* hashiter_sv restores the state of tied-hash iteration */
+	if (hashiter_sv) {
+		struct TreeRBXS_iter *iter= TreeRBXS_get_hashiter(tree);
+		IV idx;
+		if (!looks_like_number(hashiter_sv))
+			croak("Expected integer for 'hashiter'");
+		idx= SvIV(hashiter_sv);
+		if (idx < 0 || idx >= nodecount)
+			croak("'hashiter' value out of bounds");
+		node= rbtree_node_child_at_index(TreeRBXS_get_root(tree), idx);
+		if (!node) croak("BUG: access node[idx]");
+		item= GET_TreeRBXS_item_FROM_rbnode(node);
+		TreeRBXS_iter_set_item(iter, item);
+	}
+
+	/* return number of attribute (k,v) remaining in the supplied list */
+	return out_i;
+}
+
+int get_integer_version() {
+	SV *version= get_sv("Tree::RB::XS::VERSION", 0);
+	if (!version || !SvOK(version))
+		croak("$Tree::RB::XS::VERSION is not defined");
+	return (int)(SvNV(version) * 1000000);
 }
 
 /*----------------------------------------------------------------------------
@@ -1474,255 +1734,76 @@ static AV* cast_av_or_die(SV *sv, const char *context) {
 MODULE = Tree::RB::XS              PACKAGE = Tree::RB::XS
 
 void
-_init_tree(...)
+new(obj_or_pkg, ...)
+	SV *obj_or_pkg
 	ALIAS:
-		STORABLE_thaw = 1
+		_init_tree = 1
 	INIT:
 		struct TreeRBXS *tree= NULL;
-		SV *objref= NULL,
-		   *compare_fn_sv= &PL_sv_undef,
-		   *key_type_sv  = &PL_sv_undef,
-		   *kv_sv        = &PL_sv_undef,
-		   *keys_sv      = &PL_sv_undef,
-		   *values_sv    = &PL_sv_undef,
-		   *recent_sv    = &PL_sv_undef,
-		   *hashiter_sv  = &PL_sv_undef,
-		   *tmpsv;
-		HV *obj= NULL, *pkg= NULL;
-		int item_i= 0;
-		bool is_clone= false;
-		int version= 0;
-		int key_type= 0;
-		int cmp_id= 0;
-		IV nodecount= 0;
-		struct TreeRBXS_item **item_refs= NULL, *item, stack_item;
-		rbtree_node_t *node;
+		SV *objref= NULL, *tmpsv, **attr_list;
+		HV *obj_hv= NULL, *pkg= NULL;
+		SSize_t n_unknown, i;
 	PPCODE:
-		switch (ix) {
-		case 0: /* _init_tree, first arg is object or package name */
-			if (items < 1)
-				croak("Expected package name or object");
-			if (sv_isobject(ST(0)) && SvTYPE(SvRV(ST(0))) == SVt_PVHV) {
-				objref= ST(0);
-				obj= (HV*) SvRV(objref);
+		if (sv_isobject(obj_or_pkg) && SvTYPE(SvRV(obj_or_pkg)) == SVt_PVHV) {
+			objref= obj_or_pkg;
+			obj_hv= (HV*) SvRV(objref);
+		}
+		else if (SvPOK(obj_or_pkg) && (pkg= gv_stashsv(obj_or_pkg, 0))) {
+			if (!sv_derived_from(obj_or_pkg, "Tree::RB::XS"))
+				croak("Package %s does not derive from Tree:RB::XS", SvPV_nolen(obj_or_pkg));
+			obj_hv= newHV();
+			objref= sv_2mortal(newRV_noinc((SV*)obj_hv));
+			sv_bless(objref, pkg);
+			ST(0)= objref;
+		}
+		else 
+			croak("%s: first arg must be package name or blessed object", ix == 1? "_init_tree":"new");
+		
+		/* Special cases for 'new': it can be compare_fn, or a hashref */
+		if (items == 2) {
+			SV *first= ST(1);
+			/* non-ref means a compare_fn constant, likewide for coderef */
+			if (!SvROK(first) || SvTYPE(SvRV(first)) == SVt_PVCV) {
+				Newx(attr_list, 2, SV*);
+				SAVEFREEPV(attr_list);
+				attr_list[0]= newSVpvs("compare_fn");
+				attr_list[1]= first;
 			}
-			else if (SvPOK(ST(0)) && (pkg= gv_stashsv(ST(0), 0))) {
-				if (!sv_derived_from(ST(0), "Tree::RB::XS"))
-					croak("Package %s does not derive from Tree:RB::XS", SvPV_nolen(ST(0)));
-				obj= newHV();
-				objref= sv_2mortal(newRV_noinc((SV*)obj));
-				sv_bless(objref, pkg);
-				ST(0)= objref;
+			else if (SvTYPE(SvRV(first)) == SVt_PVHV) {
+				HV *attrhv= (HV*) SvRV(first);
+				ssize_t n= hv_iterinit(attrhv), i= 0;
+				HE *ent= hv_iternext(attrhv);
+				Newx(attr_list, n*2, SV*);
+				SAVEFREEPV(attr_list);
+				while (ent && i < n) {
+					attr_list[i*2]= hv_iterkeysv(ent);
+					attr_list[i*2+1]= hv_iterval(attrhv, ent);
+				}
 			}
-			else 
-				croak("_init_tree: first arg must be package name or blessed object");
-			version= (int)(SvNV(get_sv("Tree::RB::XS::VERSION", GV_ADD)) * 1000000);
-			item_i= 1;
-			break;
-		case 1: /* STORABLE_thaw, first arg is object, second is "clone" flag, 3rd is version */
-			if (items < 3)
-				croak("Require at least 3 args to STORABLE_thaw");
-			if (!sv_isobject(ST(0)) || SvTYPE(SvRV(ST(0))) != SVt_PVHV)
-				croak("BUG: Tree::RB::XS::STORABLE_thaw requires blesed-hashref");
-			objref= ST(0);
-			obj= (HV*) SvRV(objref);
-			is_clone= SvTRUE(ST(1));
-			version= (int)(SvNV(ST(2)) * 1000000);
-			item_i= 3;
-			break;
-		default:
-			croak("BUG");
+			else croak("Expected compare_fn constant, coderef, hashref, or key/value pairs");
+		} else {
+			attr_list= PL_stack_base+ax+1;
 		}
 
 		/* Upgrade this object to have TreeRBXS struct attached magically */
 		tree= TreeRBXS_get_magic_tree(objref, AUTOCREATE|OR_DIE);
-		if (tree->owner != (SV*) obj)
-			croak("Tree is already initialized");
+		if (tree->owner != (SV*) obj_hv)
+			croak("Tree was already initialized");
 
-		/* Begin iterating arguments, and store the SVs we know in variables, and put the
-		 * rest into the object hash. */
-		while (item_i < items) {
-			SV *val;
-			STRLEN len;
-			const char *attrname= SvPV(ST(item_i), len);
-			/* every attribute needs a value */
-			if (item_i + 1 == items)
-				croak("No value provided for %s", attrname);
-			val= ST(item_i+1);
-			switch (len) {
-			case  2: if (strcmp("kv", attrname) == 0) { kv_sv= val; break; }
-			    else goto into_hash;
-			case  4: if (strcmp("keys", attrname) == 0) { keys_sv= val; break; }
-			    else goto into_hash;
-			case  6: if (strcmp("values", attrname) == 0) { values_sv= val; break; }
-			    else if (strcmp("recent", attrname) == 0) { recent_sv= val; break; }
-			    else goto into_hash;
-			case  8: if (strcmp("key_type", attrname) == 0) { key_type_sv= val; break; }
-			    else if (strcmp("hashiter", attrname) == 0) { hashiter_sv= val; break; }
-			    else goto into_hash;
-			case 10: if (strcmp("compare_fn", attrname) == 0) { compare_fn_sv= val; break; }
-			    else goto into_hash;
-			case 12: if (strcmp("track_recent", attrname) == 0) { tree->track_recent= SvTRUE(val); break; }
-			    else goto into_hash;
-			case 15: if (strcmp("compat_list_get", attrname) == 0) { tree->compat_list_get= SvTRUE(val); break; }
-			    else goto into_hash;
-			case 16: if (strcmp("allow_duplicates", attrname) == 0) { tree->allow_duplicates= SvTRUE(val); break; }
-			    else goto into_hash;
-			case 21: if (strcmp("lookup_updates_recent", attrname) == 0) { tree->lookup_updates_recent= SvTRUE(val); break; }
-			default:
-			into_hash:
-				if (!hv_store_ent(obj, ST(item_i), (tmpsv= newSVsv(val)), 0))
-					SvREFCNT_dec(tmpsv); /* when hash is tied */
-			}
-			item_i+= 2;
-		}
-
-		// parse key type and compare_fn
-		key_type= SvOK(key_type_sv)? parse_key_type(key_type_sv) : 0;
-		if (key_type < 0)
-			croak("invalid key_type %s", SvPV_nolen(key_type_sv));
-		
-		if (SvOK(compare_fn_sv)) {
-			cmp_id= parse_cmp_fn(compare_fn_sv);
-			if (cmp_id < 0)
-				croak("invalid compare_fn %s", SvPV_nolen(compare_fn_sv));
-		} else {
-			cmp_id= key_type == KEY_TYPE_INT?   CMP_INT
-			      : key_type == KEY_TYPE_FLOAT? CMP_FLOAT
-			      : key_type == KEY_TYPE_BSTR?  CMP_MEMCMP
-				  : key_type == KEY_TYPE_USTR?  CMP_UTF8
-			      : key_type == KEY_TYPE_ANY?   CMP_PERL /* use Perl's cmp operator */
-			      : key_type == KEY_TYPE_CLAIM? CMP_PERL
-			      : CMP_PERL;
-		}
-
-		tree->compare_fn_id= cmp_id;
-		switch (cmp_id) {
-		case CMP_SUB:
-			tree->compare_callback= compare_fn_sv;
-			SvREFCNT_inc(tree->compare_callback);
-			tree->key_type= key_type == KEY_TYPE_CLAIM? key_type : KEY_TYPE_ANY;
-			tree->compare= TreeRBXS_cmp_perl_cb;
-			break;
-		case CMP_UTF8:
-			tree->key_type= KEY_TYPE_USTR;
-			tree->compare= TreeRBXS_cmp_memcmp;
-			break;
-		case CMP_PERL:
-			tree->key_type= key_type == KEY_TYPE_CLAIM? key_type : KEY_TYPE_ANY;
-			tree->compare= TreeRBXS_cmp_perl;
-			break;
-		case CMP_INT:
-			tree->key_type= KEY_TYPE_INT;
-			tree->compare= TreeRBXS_cmp_int;
-			break;
-		case CMP_FLOAT:
-			tree->key_type= KEY_TYPE_FLOAT;
-			tree->compare= TreeRBXS_cmp_float;
-			break;
-		case CMP_MEMCMP:
-			tree->key_type= KEY_TYPE_BSTR;
-			tree->compare= TreeRBXS_cmp_memcmp;
-			break;
-		case CMP_NUMSPLIT:
-			tree->key_type= key_type == KEY_TYPE_BSTR || key_type == KEY_TYPE_USTR
-				|| key_type == KEY_TYPE_ANY || key_type == KEY_TYPE_CLAIM? key_type : KEY_TYPE_BSTR;
-			tree->compare= TreeRBXS_cmp_numsplit;
-			break;
-		default:
-			croak("BUG: unhandled cmp_id");
-		}
-
-		/* if keys and/or values supplied... */
-		if (SvOK(kv_sv) || SvOK(keys_sv) || SvOK(values_sv)) {
-			SV **key_vec= NULL, **key_lim, **val_vec= NULL;
-			AV *av_tmp;
-			ssize_t i, num_kv, key_step= 0, val_step= 0;
-			bool allow_duplicates= tree->allow_duplicates,
-			     track_recent= tree->track_recent;
-			
-			if (SvOK(kv_sv)) {
-				if ((keys_sv && SvOK(keys_sv)) || (values_sv && SvOK(values_sv)))
-					croak("'kv' cannot be specified at the same time as 'keys' or 'values'");
-				av_tmp= cast_av_or_die(kv_sv, "'kv'");
-				if ((av_len(av_tmp)+1) & 1)
-					croak("Odd number of elements in 'kv' array");
-				if (!AvARRAY(av_tmp))
-					croak("Tied array for 'kv' not supported");
-				key_vec= AvARRAY(av_tmp);
-				key_step= 2;
-				val_vec= key_vec+1;
-				val_step= 2;
-				num_kv= (av_len(av_tmp)+1) >> 1;
-			}
-			if (SvOK(keys_sv)) {
-				av_tmp= cast_av_or_die(keys_sv, "'keys'");
-				if (!AvARRAY(av_tmp))
-					croak("Tied array for 'keys' not supported");
-				key_vec= AvARRAY(av_tmp);
-				key_step= 1;
-				num_kv= av_len(av_tmp)+1;
-			}
-			if (SvOK(values_sv)) {
-				if (!key_vec)
-					croak("'values' can't be specified without 'keys'");
-				av_tmp= cast_av_or_die(values_sv, "'values'");
-				if (!AvARRAY(av_tmp))
-					croak("Tied array for 'values' not supported");
-				if (av_len(av_tmp)+1 != num_kv)
-					croak("Length of 'values' array (%ld) does not match keys (%ld)", (long)av_len(av_tmp)+1, (long)num_kv);
-				val_vec= AvARRAY(av_tmp);
-				val_step= 1;
-			}
-			/* STORABLE_thaw lists nodes exactly as they were, so alllow duplicates if present,
-			   and don't do recent_tracking because that will get initialized next. */
-			if (ix == 1)
-				tree->allow_duplicates= true;
-			if (SvOK(recent_sv))
-				tree->track_recent= false;
-			for (key_lim= key_vec + num_kv * key_step; key_vec < key_lim; key_vec += key_step, val_vec += val_step) {
-				if (!*key_vec || !SvOK(*key_vec))
-					croak("Can't use undef as a key");
-				TreeRBXS_init_tmp_item(&stack_item, tree, *key_vec, (val_vec? *val_vec : &PL_sv_undef));
-				TreeRBXS_insert_item(tree, &stack_item, !allow_duplicates, NULL);
-			}
-			nodecount= TreeRBXS_get_count(tree);
-			tree->allow_duplicates= allow_duplicates;
-			tree->track_recent= track_recent;
-		}
-		/* user wants to initialize the linked list of track_recent */
-		if (SvOK(recent_sv)) {
-			AV *recent_av= cast_av_or_die(recent_sv, "'recent'");
-			IV i, idx, n= av_len(recent_av)+1;
-			SV **rvec= AvARRAY(recent_av);
-			if (!rvec) croak("Tied array for 'recent' is not supported");
-			for (i= 0; i < n; i++) {
-				if (!rvec[i] || !SvOK(rvec[i]) || !looks_like_number(rvec[i]))
-					croak("Elements of 'recent' must be integers");
-				idx= SvIV(rvec[i]);
-				if (idx < 0 || idx >= nodecount)
-					croak("Element in 'recent' (%ld) is out of bounds (0-%ld)", (long)idx, (long)(nodecount-1));
-				node= rbtree_node_child_at_index(TreeRBXS_get_root(tree), idx);
-				if (!node) croak("BUG: access node[idx]");
-				item= GET_TreeRBXS_item_FROM_rbnode(node);
-				TreeRBXS_recent_insert_before(tree, item, &tree->recent);
+		n_unknown= init_tree_from_attr_list(tree, attr_list, items-1);
+		if (n_unknown) {
+			/* if called by the public constructor, throw an error */
+			if (ix == 0)
+				croak("Unknown attribute %s", SvPV_nolen(attr_list[0]));
+			/* else return them to caller.  They might already be in the stack. */
+			if (attr_list != PL_stack_base+ax+1) {
+				EXTEND(SP, n_unknown);
+				for (i= 0; i < n_unknown; i++)
+					ST(i+1)= attr_list[i];
 			}
 		}
-		/* hashiter_sv restores the state of tied-hash iteration */
-		if (SvOK(hashiter_sv)) {
-			struct TreeRBXS_iter *iter= TreeRBXS_get_hashiter(tree);
-			IV idx;
-			if (!looks_like_number(hashiter_sv))
-				croak("Expected integer for 'hashiter'");
-			idx= SvIV(hashiter_sv);
-			if (idx < 0 || idx >= nodecount)
-				croak("'hashiter' value out of bounds");
-			node= rbtree_node_child_at_index(TreeRBXS_get_root(tree), idx);
-			if (!node) croak("BUG: access node[idx]");
-			item= GET_TreeRBXS_item_FROM_rbnode(node);
-			TreeRBXS_iter_set_item(iter, item);
-		}
-		XSRETURN(1);
+		i= ix == 0? 1 : n_unknown;
+		XSRETURN(i);
 
 void
 _assert_structure(tree)
@@ -1735,126 +1816,244 @@ STORABLE_freeze(tree, cloning)
 	struct TreeRBXS *tree
 	bool cloning
 	INIT:
-		SV *svtmp;
-		HV *treehv= (HV*) tree->owner;
-		HE *pos;
-		AV *values_av= NULL;
-		AV *keys_av= NULL;
-		IV *keys_ivec= NULL;
-		NV *keys_nvec= NULL;
-		AV *recent_av= NULL;
-		SV *version= get_sv("Tree::RB::XS::VERSION", 0);
 		IV nodecount= TreeRBXS_get_count(tree);
 		rbtree_node_t *node= rbtree_node_left_leaf(TreeRBXS_get_root(tree));
 		struct TreeRBXS_item *item;
-		int i;
+		int i, cmp_id= tree->compare_fn_id, key_type= tree->key_type,
+			flags, version= get_integer_version();
+		unsigned char sb[14];
+		AV *attrs= newAV();
+		SV *attrs_ref= sv_2mortal(newRV_noinc((SV*) attrs));
+		HV *treehv= (HV*) tree->owner;
+		HE *pos;
 	PPCODE:
-		/* Always start with version */
-		if (!version || !SvOK(version))
-			croak("Missing $Tree::RB::XS::VERSION");
-		XPUSHs(version);
-		
 		/* dump out the contents of the hashref, which is empty unless set by subclass */
 		hv_iterinit(treehv);
 		while (pos= hv_iternext(treehv)) {
-			XPUSHs(hv_iterkeysv(pos));
-			XPUSHs(hv_iterval(treehv, pos));
+			av_push(attrs, SvREFCNT_inc(hv_iterkeysv(pos)));
+			av_push(attrs, newSVsv(hv_iterval(treehv, pos)));
 		}
 
-		/* always include key type and comprison function */
-		mXPUSHs(newSVpvs("key_type"));
-		mXPUSHs(newSViv(tree->key_type));
+		/* Build lists of keys and values */
+		if (nodecount) {
+			AV *keys_av, *values_av;
+			SV *keys= NULL, *values= NULL;
+			//IV *keys_ivec;
+			//NV *keys_nvec;
+			//bool all_one= true, all_undef= true;
+			values_av= newAV();
+			values= sv_2mortal(newRV_noinc((SV*) values_av));
+			av_extend(values_av, nodecount-1);
+			/* decide whether keys will be an AV, or packed in a buffer */
+			//if (key_type == KEY_TYPE_INT) {
+			//	/* allocate a buffer of ints */
+			//	svtmp= make_aligned_buffer(NULL, sizeof(IV)*nodecount, sizeof(IV));
+			//	keys_ivec= (IV*) SvPVX(svtmp);
+			//	keys= newRV_noinc(svtmp);
+			//} else if (key_type == KEY_TYPE_FLOAT) {
+			//	/* allocate a buffer of NV */
+			//	svtmp= make_aligned_buffer(NULL, sizeof(NV)*nodecount, sizeof(NV));
+			//	keys_nvec= (NV*) SvPVX(svtmp);
+			//	keys= newRV_noinc(svtmp);
+			//} else {
+				keys_av= newAV();
+				keys= sv_2mortal(newRV_noinc((SV*) keys_av));
+				av_extend(keys_av, nodecount-1);
+			//}
+			/* Now fill the key and value arrays */
+			for (i= 0; i < nodecount && node; i++, node=rbtree_node_next(node)) {
+				item= GET_TreeRBXS_item_FROM_rbnode(node);
+				/* I think I need to populate this array with the exact SV from the tree so that
+				 * Storable can recognize repeat references that might live in the larger graph.
+				 * In normal circumstances the correct thing here is to newSVsv() so that
+				 * the array items aren't shared. */
+				av_push(values_av, SvREFCNT_inc(item->value));
+				/* for packed keys, write the existing buffer.  else create a new SV */
+				//switch (key_type) {
+				//case KEY_TYPE_INT:
+				//	keys_ivec[i]= item->keyunion.ikey;
+				//	break;
+				//case KEY_TYPE_FLOAT:
+				//	keys_nvec[i]= item->keyunion.nkey;
+				//	break;
+				//case KEY_TYPE_ANY:
+				//case KEY_TYPE_CLAIM: av_push(keys_av, SvREFCNT_inc(item->keyunion.svkey)); break;
+				//default:
+					av_push(keys_av, TreeRBXS_item_wrap_key(item));
+				//}
+			}
+			/* sanity-check: ensure loop ended at expected count */
+			if (i < nodecount) croak("BUG: too few nodes in tree");
+			if (node) croak("BUG: too many nodes in tree");
+			/* optimize key storage */
+			//if (key_type == KEY_TYPE_INT) {
+			//	key_bits= 
+			//}
+			av_push(attrs, newSVpvs("keys"));
+			av_push(attrs, SvREFCNT_inc(keys));
+			av_push(attrs, newSVpvs("values"));
+			av_push(attrs, SvREFCNT_inc(values));
 
-		svtmp= tree->compare_fn_id == CMP_SUB
-			? newSVsv(tree->compare_callback)
-			: newSViv(tree->compare_fn_id);
-		mXPUSHs(newSVpvs("compare_fn"));
-		mXPUSHs(svtmp);
-
-		/* push every configuration attribute that isn't the default value */
-		if (tree->allow_duplicates) {
-			mXPUSHs(newSVpvs("allow_duplicates"));
-			XPUSHs(&PL_sv_yes);
-		}
-		if (tree->compat_list_get) {
-			mXPUSHs(newSVpvs("compat_list_get"));
-			XPUSHs(&PL_sv_yes);
-		}
-		if (tree->track_recent) {
-			mXPUSHs(newSVpvs("track_recent"));
-			XPUSHs(&PL_sv_yes);
-		}
-		if (tree->lookup_updates_recent) {
-			mXPUSHs(newSVpvs("lookup_updates_recent"));
-			XPUSHs(&PL_sv_yes);
-		}
-		/* next, values, which also tells the thaw() method how many keys there will be */
-		mXPUSHs(newSVpvs("values"));
-		mXPUSHs(newRV_noinc((SV*)(values_av= newAV())));
-		av_extend(values_av, nodecount-1);
-		/* decide whether keys will be an AV, or packed in a buffer */
-		mXPUSHs(newSVpvs("keys"));
-		if (tree->key_type == KEY_TYPE_INT) {
-			/* allocate a buffer of ints */
-			svtmp= make_aligned_buffer(NULL, sizeof(IV)*nodecount, sizeof(IV));
-			keys_ivec= (IV*) SvPVX(svtmp);
-			mXPUSHs(newRV_noinc(svtmp));
-		} else if (tree->key_type == KEY_TYPE_FLOAT) {
-			/* allocate a buffer of NV */
-			svtmp= make_aligned_buffer(NULL, sizeof(NV)*nodecount, sizeof(NV));
-			keys_nvec= (NV*) SvPVX(svtmp);
-			mXPUSHs(newRV_noinc(svtmp));
-		} else {
-			keys_av= newAV();
-			av_extend(keys_av, nodecount-1);
-			mXPUSHs(newRV_noinc((SV*) keys_av));
-		}
-		/* Now fill the key and value arrays */
-		for (i= 0; i < nodecount && node; i++, node=rbtree_node_next(node)) {
-			item= GET_TreeRBXS_item_FROM_rbnode(node);
-			/* I think I need to populate this array with the exact SV from the tree so that
-			 * Storable can recognize repeat references that might live in the larger graph.
-			 * In normal circumstances the correct thing here is to newSVsv() so that
-			 * the array items aren't shared. */
-			av_push(values_av, SvREFCNT_inc(item->value));
-			/* for packed keys, write the existing buffer.  else create a new SV */
-			switch (tree->key_type) {
-			case KEY_TYPE_INT: keys_ivec[i]= item->keyunion.ikey; break;
-			case KEY_TYPE_FLOAT: keys_nvec[i]= item->keyunion.nkey; break;
-			case KEY_TYPE_ANY:
-			case KEY_TYPE_CLAIM: av_push(keys_av, SvREFCNT_inc(item->keyunion.svkey)); break;
-			default:
-				av_push(keys_av, TreeRBXS_item_wrap_key(item));
+			/* if any nodes belong to the recent-list, emit that as an array of node indices */
+			if (tree->recent_count) {
+				struct dllist_node *root= &tree->recent, *pos= tree->recent.next;
+				AV *recent_av= newAV();
+				av_push(attrs, newSVpvs("recent"));
+				av_push(attrs, newRV_noinc((SV*) recent_av));
+				av_extend(recent_av, tree->recent_count-1);
+				for (i= tree->recent_count; i > 0 && pos != root; --i, pos= pos->next) {
+					item= GET_TreeRBXS_item_FROM_recent(pos);
+					av_push(recent_av, newSViv(rbtree_node_index(&item->rbnode)));
+				}
+				/* sanity check */
+				if (i != 0) croak("BUG: too few recent-tracked nodes");
+				if (pos != root) croak("BUG: too many recent-tracked nodes");
+			}
+			/* and finally, the optional built-in iterator for when the tree is tied to a hash */
+			if (tree->hashiter && tree->hashiter->item) {
+				/* only need to initialize it if it is pointing somewhere other than the first
+				 * tree node. */
+				IV pointing_at= rbtree_node_index(&tree->hashiter->item->rbnode);
+				if (pointing_at) {
+					av_push(attrs, newSVpvs("hashiter"));
+					av_push(attrs, newSViv(pointing_at));
+				}
 			}
 		}
-		/* sanity-check: ensure loop ended at expected count */
-		if (i < nodecount) croak("BUG: too few nodes in tree");
-		if (node) croak("BUG: too many nodes in tree");
+		/* Attempting to clone a tree with a user-supplied callback comparison function will
+		 * fail, because Storable won't encode coderefs by default.  This makes sense for
+		 * process-to-process serialization, but for dclone() I want to enable it so long as
+		 * the coderef is a global function. */
+		if (cmp_id == CMP_SUB) {
+			if (!cloning)
+				croak("Can't serialize a Tree::RB::XS with a custom comparison coderef");
+			else {
+				SV *fullname;
+				CV *cv= (CV*) SvRV(tree->compare_callback);
+				GV *gv= CvGV(cv), *re_gv;
+				HV *stash= GvSTASH(gv);
+				const char *name= GvNAME(gv);
+				size_t namelen, pkglen;
+				
+				if (!stash || !name || !HvNAME(stash) || !(re_gv= gv_fetchmethod(stash, name)) || GvCV(re_gv) != cv)
+					croak("Comparison function (%s::%s) for Tree::RB::XS instance cannot be serialized unless it exists as a global package function",
+						stash? HvNAME(stash) : "NULL",
+						name? name : "NULL"
+					);
+				av_push(attrs, newSVpvs("compare_fn"));
+				av_push(attrs, newSVpvf(pTHX_ "%s::%s", HvNAME(stash), name));
+			}
+		}
 
-		/* if any nodes belong to the recent-list, emit that as an array of node indices */
-		if (tree->recent_count) {
-			struct dllist_node *root= &tree->recent, *pos= tree->recent.next;
-			mXPUSHs(newSVpvs("recent"));
-			mXPUSHs(newRV_noinc((SV*) (recent_av= newAV())));
-			av_extend(recent_av, tree->recent_count-1);
-			for (i= tree->recent_count; i > 0 && pos != root; --i, pos= pos->next) {
-				item= GET_TreeRBXS_item_FROM_recent(pos);
-				av_push(recent_av, newSViv(rbtree_node_index(&item->rbnode)));
+		if (version < 0 || version > 0x7FFFFFFF)
+			croak("BUG: version out of bounds");
+		sb[0]= version & 0xFF;
+		sb[1]= (version >>  8) & 0xFF;
+		sb[2]= (version >> 16) & 0xFF;
+		sb[3]= (version >> 24) & 0xFF;
+		if (key_type < 1 || key_type > 255)
+			croak("BUG: key_type out of bounds");
+		sb[4]= key_type & 0xFF;
+		sb[5]= (key_type >> 8) & 0xFF;
+		if (cmp_id < 1 || cmp_id > 255)
+			croak("BUG: compare_fn outof bounds");
+		sb[6]= cmp_id & 0xFF;
+		sb[7]= (cmp_id >> 8) & 0xFF;
+		flags= (tree->allow_duplicates? 1 : 0)
+		     | (tree->compat_list_get? 2 : 0)
+		     | (tree->track_recent? 4 : 0)
+		     | (tree->lookup_updates_recent? 8 : 0);
+		sb[8]= flags & 0xFF;
+		sb[9]= (flags >> 8) & 0xFF;
+
+		EXTEND(SP, 2);
+		ST(0)= sv_2mortal(newSVpvn(sb, 10));
+		ST(1)= attrs_ref;
+		XSRETURN(2);
+
+void
+STORABLE_thaw(objref, cloning, serialized, attrs)
+	SV *objref
+	bool cloning
+	SV *serialized
+	AV *attrs
+	INIT:
+		struct TreeRBXS *tree= NULL;
+		int version, cmp_id, key_type, flags, i;
+		ssize_t attr_len, n_unknown;
+		const unsigned char *sb;
+		const char *pkg_name, *sub_name;
+		STRLEN sb_len, pkg_len= 0, name_len= 0;
+		SV **attr_vec= unpack_array((SV*)attrs, &attr_len), **attr_list, *tmpsv;
+	PPCODE:
+		if (!SvROK(objref) || SvTYPE(SvRV(objref)) != SVt_PVHV)
+			croak("Expected blessed hashref as first argument");
+		tree= TreeRBXS_get_magic_tree(objref, AUTOCREATE|OR_DIE);
+		if (tree->owner != SvRV(objref))
+			croak("Tree was already initialized");
+		
+		/* unpack serialized fields */
+		sb= (const unsigned char*) SvPV(serialized, sb_len);
+		if (sb_len < 10)
+			croak("Expected at least 10 bytes of serialized data");
+		version=  sb[0] + (sb[1] << 8) + (sb[2] << 16) + (sb[3] << 24);
+		key_type= sb[4] + (sb[5] << 8);
+		cmp_id=   sb[6] + (sb[7] << 8);
+		flags=    sb[8] + (sb[9] << 8);
+
+		if (version <= 0)
+			croak("Invalid serialized version");
+		if (version > get_integer_version())
+			croak("Attempt to deserialize Tree::RB::XS from a newer version");
+		/* STORABLE_freeze lists nodes exactly as they were, so alllow duplicates if present,
+		 * regardless of the final state of the allow_duplicates attribute. */
+		tree->allow_duplicates= /* flags & 1 */ true; /* corrected below */
+		tree->compat_list_get= flags & 2;
+		tree->track_recent= flags & 4;
+		tree->lookup_updates_recent= flags & 8;
+
+		if (key_type <= 0 || key_type > KEY_TYPE_MAX)
+			croak("Invalid serialized key_type");
+		tree->key_type= key_type;
+
+		if (cmp_id <= 0 || cmp_id > CMP_MAX)
+			croak("Invalid serialized compare_fn");
+		tree->compare_fn_id= cmp_id;
+
+		/* attr_vec gets modified, so make a copy of attrs' AvARRAY */
+		Newx(attr_list, attr_len, SV*);
+		SAVEFREEPV(attr_list);
+		memcpy(attr_list, attr_vec, sizeof(SV*) * attr_len);
+
+		/* If the comparison function is a coderef, try to look up the name of the function */
+		if (cmp_id == CMP_SUB) {
+			if (!cloning) croak("compare_fn lookup is forbidden unless cloning");
+			/* look for attribute compare_fn, which is probably the final one */
+			for (i= attr_len-2; i >= 0; i-= 2) {
+				if (strcmp(SvPV_nolen(attr_list[i]), "compare_fn") == 0) {
+					/* replace function name with coderef */
+					GV *gv= gv_fetchsv(attr_list[i+1], 0, SVt_PVCV);
+					if (gv && GvCV(gv))
+						attr_list[i+1]= sv_2mortal(newRV_inc((SV*) GvCV(gv)));
+					else
+						croak("Can't find function %s", SvPV_nolen(attr_list[i+1]));
+					break;
+				}
 			}
-			/* sanity check */
-			if (i != 0) croak("BUG: too few recent-tracked nodes");
-			if (pos != root) croak("BUG: too many recent-tracked nodes");
+			if (i < 0)
+				croak("No compare_fn name found in serialized data");
 		}
-		/* and finally, the optional built-in iterator for when the tree is tied to a hash */
-		if (tree->hashiter && tree->hashiter->item) {
-			/* only need to initialize it if it is pointing somewhere other than the first
-			 * tree node. */
-			IV pointing_at= rbtree_node_index(&tree->hashiter->item->rbnode);
-			if (pointing_at) {
-				mXPUSHs(newSVpvs("hashiter"));
-				mXPUSHs(newSViv(pointing_at));
-			}
+
+		n_unknown= init_tree_from_attr_list(tree, attr_list, attr_len);
+		if (n_unknown) {
+			HV *obj= (HV*) SvRV(objref);
+			/* store leftovers into the hashref of the object */
+			for (i= 0; i < n_unknown-1; i += 2)
+				if (!hv_store_ent(obj, attr_list[i], (tmpsv= newSVsv(attr_list[i+1])), 0))
+					sv_2mortal(tmpsv);
 		}
+		tree->allow_duplicates= flags & 1; /* delayed for reason above */
+		XSRETURN(0);
 
 void
 key_type(tree)

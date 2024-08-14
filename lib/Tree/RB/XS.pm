@@ -206,19 +206,6 @@ keys replace the values of earlier ones).
 
 =back
 
-=cut
-
-sub new {
-	if (@_ == 2) {
-		if (ref $_[1] eq 'HASH') {
-			splice(@_, 1, 1, %{$_[1]});
-		} else {
-			splice(@_, 1, 0, 'compare_fn');
-		}
-	}
-	goto \&_init_tree;
-}
-
 =head1 ATTRIBUTES
 
 =head2 compare_fn
