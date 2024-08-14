@@ -55,8 +55,31 @@ subtest dclone => sub {
    is( $tree2, undef, 'dclone failed for anon coderef' );
 
    $tree= Tree::RB::XS->new(compare_fn => \&compare_it);
-   my $tree2= eval { dclone($tree) };
+   $tree2= eval { dclone($tree) };
    is( $tree2, object { call compare_fn => \&compare_it; }, 'dclone succeeds for global sub' );
+   
+   # Now try serializing with node objects
+   $tree= Tree::RB::XS->new(kv => [ 1,2, 3,4, 5,6, 7,8 ]);
+   my $node_34= $tree->get_node(3);
+   my $node_78= $tree->get_node(7);
+   my $node_56= $tree->get_node(5);
+   $node_56->prune;
+   my $buffer= freeze [ $node_34, $node_78, $node_56 ];
+   my ($new_34, $new_78, $new_56)= @{ thaw $buffer };
+   is( $new_34, object {
+      call key   => 3;
+      call value => 4;
+   }, 'deserialized node (3,4)' );
+   is( $new_78, object {
+      call key   => 7;
+      call value => 8;
+      call tree  => $new_34->tree;
+   }, 'deserialized node (7,8)' );
+   is( $new_56, object {
+      call key   => 5;
+      call value => 6;
+      call tree  => undef;
+   }, 'deserialized disconnected node (5,6)' );
 };
 
 done_testing;

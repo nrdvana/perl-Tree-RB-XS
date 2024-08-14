@@ -1473,7 +1473,7 @@ static SV * new_enum_dualvar(pTHX_ IV ival, SV *name) {
 /* Return an SV array of an arrayref. 
  * Returns NULL if it wasn't an arrayref.
  */
-static SV** unpack_array(SV *array, ssize_t *len) {
+static SV** unwrap_array(SV *array, ssize_t *len) {
 	AV *av;
 	SV **vec;
 	ssize_t n;
@@ -1647,7 +1647,7 @@ ssize_t init_tree_from_attr_list(
 		if (kv_sv) {
 			if (keys_sv || values_sv)
 				croak("'kv' cannot be specified at the same time as 'keys' or 'values'");
-			if (!(key_vec= unpack_array(kv_sv, &num_kv)))
+			if (!(key_vec= unwrap_array(kv_sv, &num_kv)))
 				croak("'kv' must be an arrayref");
 			if (num_kv & 1)
 				croak("Odd number of elements in 'kv' array");
@@ -1656,7 +1656,7 @@ ssize_t init_tree_from_attr_list(
 			key_step= val_step= 2;
 		}
 		if (keys_sv) {
-			if (!(key_vec= unpack_array(keys_sv, &num_kv)))
+			if (!(key_vec= unwrap_array(keys_sv, &num_kv)))
 				croak("'keys' must be an arrayref");
 			key_step= 1;
 		}
@@ -1664,7 +1664,7 @@ ssize_t init_tree_from_attr_list(
 			ssize_t nvals;
 			if (!key_vec)
 				croak("'values' can't be specified without 'keys'");
-			if (!(val_vec= unpack_array(values_sv, &nvals)))
+			if (!(val_vec= unwrap_array(values_sv, &nvals)))
 				croak("'values' must be an arrayref");
 			if (nvals != num_kv)
 				croak("Length of 'values' array (%ld) does not match keys (%ld)", (long)nvals, (long)num_kv);
@@ -1687,7 +1687,7 @@ ssize_t init_tree_from_attr_list(
 	/* user wants to initialize the linked list of track_recent */
 	if (recent_sv) {
 		ssize_t i, idx, n;
-		SV **rvec= unpack_array(recent_sv, &n);
+		SV **rvec= unwrap_array(recent_sv, &n);
 		if (!rvec) croak("'recent' must be an arrayref");
 		for (i= 0; i < n; i++) {
 			if (!rvec[i] || !SvOK(rvec[i]) || !looks_like_number(rvec[i])) // yes this ignores floating point mistakes...
@@ -1984,7 +1984,7 @@ STORABLE_thaw(objref, cloning, serialized, attrs)
 		const unsigned char *sb;
 		const char *pkg_name, *sub_name;
 		STRLEN sb_len, pkg_len= 0, name_len= 0;
-		SV **attr_vec= unpack_array((SV*)attrs, &attr_len), **attr_list, *tmpsv;
+		SV **attr_vec= unwrap_array((SV*)attrs, &attr_len), **attr_list, *tmpsv;
 	PPCODE:
 		if (!SvROK(objref) || SvTYPE(SvRV(objref)) != SVt_PVHV)
 			croak("Expected blessed hashref as first argument");
@@ -2897,6 +2897,67 @@ mark_oldest(item)
 	PPCODE:
 		TreeRBXS_recent_insert_before(tree, item, tree->recent.next);
 		XSRETURN(1);
+
+void
+STORABLE_freeze(item, cloning)
+	struct TreeRBXS_item *item
+	bool cloning
+	INIT:
+		struct TreeRBXS *tree= TreeRBXS_item_get_tree(item);
+		AV *av;
+	PPCODE:
+		if (tree) {
+			ST(0)= sv_2mortal(newSViv(rbtree_node_index(&item->rbnode)));
+			ST(1)= sv_2mortal(newRV_inc(tree->owner));
+		} else {
+			ST(0)= sv_2mortal(newSViv(-1));
+			ST(1)= sv_2mortal(newRV_noinc((SV*)(av= newAV())));
+			av_push(av, TreeRBXS_item_wrap_key(item));
+			av_push(av, SvREFCNT_inc(item->value));
+		}
+		XSRETURN(2);
+
+void
+STORABLE_thaw(item_sv, cloning, idx, refs)
+	SV *item_sv
+	bool cloning
+	IV idx
+	SV *refs
+	INIT:
+		struct TreeRBXS *tree;
+		struct TreeRBXS_item *item;
+		rbtree_node_t *node;
+		MAGIC *magic;
+	PPCODE:
+		if (idx == -1) {
+			SSize_t n;
+			SV **svec= unwrap_array(refs, &n);
+			if (!svec || n != 2 || !svec[0] || !svec[1])
+				croak("Expected arrayref of (key,value)");
+			Newx(item, 1, struct TreeRBXS_item);
+			memset(item, 0, sizeof(*item));
+			item->key_type= KEY_TYPE_ANY;
+			item->keyunion.svkey= SvREFCNT_inc(svec[0]);
+			item->value= SvREFCNT_inc(svec[1]);
+		} else {
+			tree= TreeRBXS_get_magic_tree(refs, OR_DIE);
+			if (!(node= rbtree_node_child_at_index(TreeRBXS_get_root(tree), idx)))
+				croak("Tree does not have element %ld", (long) idx);
+			item= GET_TreeRBXS_item_FROM_rbnode(node);
+			if (item->owner) {
+				if (item->owner != SvRV(item_sv))
+					croak("BUG: Storable deserialized tree node multiple times");
+				return;
+			}
+		}
+		item->owner= SvRV(item_sv);
+		magic= sv_magicext(item->owner, NULL, PERL_MAGIC_ext, &TreeRBXS_item_magic_vt, (const char*) item, 0);
+		#ifdef USE_ITHREADS
+		magic->mg_flags |= MGf_DUP;
+		#else
+		(void)magic; // suppress warning
+		#endif
+		XSRETURN(0);
 
 #-----------------------------------------------------------------------------
 #  Iterator methods
