@@ -200,9 +200,31 @@ Whether L</lookup> and L</get> methods automatically mark a node as the most rec
 
 C<kv>
 
-An initial list of C<key,value> pairs to initialize the tree with.  If allow_duplicates
+An initial arrayref of C<key,value> pairs to initialize the tree with.  If allow_duplicates
 is requested, this uses L</insert_multi>, else it uses L</put_multi> (so later duplicate
 keys replace the values of earlier ones).
+
+=item *
+
+C<keys>
+
+An arrayref of keys to use to initialize the tree.  If C<values> are not provided, the value
+of each node will be C<undef>.
+
+=item *
+
+C<values>
+
+An arrayref of values to use to initialize the tree.  If provided, it must be the same length
+as C<keys>.
+
+=item *
+
+C<recent>
+
+Specifies a list of integers which initialize the list used by the "track_recent" feature,
+overriding the order seen in C<keys> or C<kv>.  The integer refers to the L</nth> node of the
+assembled tree.  The list does not need to include all the nodes.
 
 =back
 
