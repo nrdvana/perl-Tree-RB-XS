@@ -35,6 +35,28 @@ static bool shim_foldEQ(const char *s1, const char *s2, int len) {
 #define foldEQ shim_foldEQ
 #endif
 
+static bool looks_like_integer(SV *sv) {
+	if (!sv) return false;
+	if (SvMAGICAL(sv))
+		mg_get(sv);
+	if (SvIOK(sv) || SvUOK(sv))
+		return true;
+	if (SvNOK(sv) && (SvNV(sv) == (NV)(IV)SvNV(sv)))
+		return true;
+	if (SvPOK(sv)) {
+		STRLEN len;
+		const char *str= SvPV(sv, len);
+		if (len == 0 || !((str[0] >= '0' && str[0] <= '9') || str[0] == '-' || str[0] == '+'))
+			return false;
+		while (--len > 0) {
+			if (str[len] < '0' || str[len] > '9')
+				return false;
+		}
+		return true;
+	}
+	return false;
+}
+
 static int parse_key_type(SV *type_sv) {
 	const char *str;
 	size_t len;
@@ -1470,8 +1492,8 @@ static SV * new_enum_dualvar(pTHX_ IV ival, SV *name) {
 	return name;
 }
 
-/* Return an SV array of an arrayref. 
- * Returns NULL if it wasn't an arrayref.
+/* Return an SV array of an AV.
+ * Returns NULL if it wasn't an AV or arrayref.
  */
 static SV** unwrap_array(SV *array, ssize_t *len) {
 	AV *av;
@@ -1674,9 +1696,7 @@ ssize_t init_tree_from_attr_list(
 		if (recent_sv)
 			tree->track_recent= false;
 		for (key_lim= key_vec + num_kv * key_step; key_vec < key_lim; key_vec += key_step, val_vec += val_step) {
-			if (!*key_vec || !SvOK(*key_vec))
-				croak("Can't use undef as a key");
-			TreeRBXS_init_tmp_item(&stack_item, tree, *key_vec, (val_vec? *val_vec : &PL_sv_undef));
+			TreeRBXS_init_tmp_item(&stack_item, tree, (*key_vec? *key_vec : &PL_sv_undef), (val_vec? *val_vec : &PL_sv_undef));
 			TreeRBXS_insert_item(tree, &stack_item, !tree->allow_duplicates, NULL);
 		}
 		/* restore tracking setting */
@@ -1690,7 +1710,7 @@ ssize_t init_tree_from_attr_list(
 		SV **rvec= unwrap_array(recent_sv, &n);
 		if (!rvec) croak("'recent' must be an arrayref");
 		for (i= 0; i < n; i++) {
-			if (!rvec[i] || !SvOK(rvec[i]) || !looks_like_number(rvec[i])) // yes this ignores floating point mistakes...
+			if (!looks_like_integer(rvec[i]))
 				croak("Elements of 'recent' must be integers");
 			idx= SvIV(rvec[i]);
 			if (idx < 0 || idx >= nodecount)
@@ -1705,7 +1725,7 @@ ssize_t init_tree_from_attr_list(
 	if (hashiter_sv) {
 		struct TreeRBXS_iter *iter= TreeRBXS_get_hashiter(tree);
 		IV idx;
-		if (!looks_like_number(hashiter_sv))
+		if (!looks_like_integer(hashiter_sv))
 			croak("Expected integer for 'hashiter'");
 		idx= SvIV(hashiter_sv);
 		if (idx < 0 || idx >= nodecount)

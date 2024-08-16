@@ -43,6 +43,17 @@ subtest all_key_types => sub {
 	}
 };
 
+subtest lvalue => sub {
+	my $tree= Tree::RB::XS->new;
+	$tree->insert(5);
+	$tree->get_node(5)->value= 6;
+	++$tree->get_node(5)->value;
+	is( $tree->min_node, object {
+		call key => 5;
+		call value => 7;
+	});
+};
+
 subtest prune => sub {
 	my $tree= Tree::RB::XS->new(kv => [ x => 2, 42 => 1 ]);
 	is( $tree->size, 2, '2 nodes before prune' );
