@@ -980,21 +980,21 @@ Has alias C<LUPREV> to match Tree::RB.
 
 =item L<Tree::RB>
 
-The Red/Black module this one used as API inspiration.  The fastest pure-perl tree module on
-CPAN.  Implemented as blessed arrayrefs.
+The fastest pure-perl tree module on CPAN.  Implemented as blessed arrayrefs.
 
-The API of this module is almost a complete superset of C<Tree::RB> with a few differences:
+Tree::RB::XS was originally just an XS version of this module's API, with a few important
+differences:
 
 =over
 
 =item *
 
-The C<get> method in this module is not affected by array context, unless you
+The C<get> method in Tree::RB::XS is not affected by array context, unless you
 request L</compat_list_get>.
 
 =item *
 
-C<resort> is not implemented (would be lots of effort, and unlikely to be needed)
+C<resort> is not implemented in Tree::RB::XS
 
 =item *
 
@@ -1009,14 +1009,25 @@ Many methods have official names changed, but aliases are provided for compatibi
 
 =item L<AVLTree>
 
-Another XS-based tree module.  About 6%-70% slower than this one depending on whether you use
-coderef comparisons or optimized comparisons.
+Another XS-based tree module.  About 6%-70% slower than Tree::RB::XS depending on whether you
+use coderef comparisons or optimized comparisons.
 
 =item L<Tree::AVL>
 
 An AVL tree implementation in pure perl.  The API is perhaps more convenient, with the ability
 to add your object to the tree with a callback that derives the key from that object.
 However, it runs significantly slower than Tree::RB.
+
+=item L<Tie::Hash::Indexed>
+
+Not a tree, but the second-fastest module on CPAN if you want a hash that preserves insertion
+order, such as for an LRU cache.  Technically a hash table should out-perform a binary tree on
+massive collections (O(1) lookup time vs. O(log N) lookup time), but currently Tree::RB::XS
+benchmarks quite a bit faster.
+
+=item L<Hash::Ordered>
+
+The fastest pure-perl module on CPAN for ordered hashes / LRU caches.
 
 =back
 
