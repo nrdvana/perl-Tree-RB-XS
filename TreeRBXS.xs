@@ -3195,6 +3195,20 @@ delete(iter)
 			ST(0)= &PL_sv_undef;
 		XSRETURN(1);
 
+void
+STORABLE_freeze(iter, cloning)
+	struct TreeRBXS_iter *iter
+	bool cloning
+	INIT:
+		char itertype= (iter->reverse? 1 : 0) | (iter->recent? 2 : 0);
+		AV *refs;
+	PPCODE:
+		ST(0)= sv_2mortal(newSVpvn(&itertype, 1));
+		ST(1)= sv_2mortal(newRV_noinc((SV*) (refs= newAV())));
+		av_push(refs, newRV_inc(iter->tree->owner));
+		av_push(refs, iter->item? newSViv(rbtree_node_index(&iter->item->rbnode)) : newSV(0));
+		XSRETURN(2);
+
 #-----------------------------------------------------------------------------
 #  Constants
 #

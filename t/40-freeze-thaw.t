@@ -80,6 +80,15 @@ subtest dclone => sub {
       call value => 6;
       call tree  => undef;
    }, 'deserialized disconnected node (5,6)' );
+   
+   # Now try serializing iterators
+   todo "Storable is unable to serialize coderefs, even if freeze/thaw are defined" => sub {
+      my $iter_clone= eval {
+         $buffer= freeze $tree->iter;
+         thaw $buffer;
+      };
+      is( $iter_clone, object { call next_key => $tree->min_node->key; });
+   };
 };
 
 done_testing;
