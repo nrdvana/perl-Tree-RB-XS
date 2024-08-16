@@ -1,7 +1,7 @@
 package Tree::RB::XS;
 
 # VERSION
-# ABSTRACT: Red/Black Tree implemented in C, with similar API to Tree::RB
+# ABSTRACT: Red/Black Tree and LRU Cache implemented in C
 
 use strict;
 use warnings;
