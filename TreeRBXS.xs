@@ -1737,7 +1737,8 @@ void
 new(obj_or_pkg, ...)
 	SV *obj_or_pkg
 	ALIAS:
-		_init_tree = 1
+		Tree::RB::XS::TIEHASH    = 0
+		Tree::RB::XS::_init_tree = 1
 	INIT:
 		struct TreeRBXS *tree= NULL;
 		SV *objref= NULL, *tmpsv, **attr_list;
@@ -2159,6 +2160,7 @@ insert(tree, key, val=&PL_sv_undef)
 	SV *val
 	ALIAS:
 		Tree::RB::XS::put         = 1
+		Tree::RB::XS::STORE       = 1
 	INIT:
 		struct TreeRBXS_item stack_item, *inserted;
 		SV *oldval= NULL;
@@ -2493,6 +2495,8 @@ truncate_recent(tree, max_count)
 IV
 clear(tree)
 	struct TreeRBXS *tree
+	ALIAS:
+		Tree::RB::XS::CLEAR = 1
 	CODE:
 		RETVAL= TreeRBXS_get_count(tree);
 		TreeRBXS_clear(tree);

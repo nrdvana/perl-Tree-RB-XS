@@ -527,6 +527,10 @@ nodes with insertion-order tracking enabled.  See L</track_recent>.
 Return an iterator that iterates the insertion-order from newest to oldest.  This only iterates
 nodes with insertion-order tracking enabled.  See L</track_recent>.
 
+=head1 NODE OBJECTS
+
+See L<Tree::RB::XS::Node>
+
 =cut
 
 sub iter {
@@ -553,139 +557,10 @@ sub iter_older {
 	Tree::RB::XS::Iter->_new($node || $self, -2);
 }
 
-=head1 NODE OBJECTS
-
-=head2 Node Attributes
-
-=over
-
-=item key
-
-The sort key.  Read-only, but if you supplied a reference and you modify what it
-points to, you will break the sorting of the tree.
-
-=item value
-
-The data associated with the node.  Read/Write.
-
-=item prev
-
-The previous node in the sequence of keys.  Alias C<predecessor> for C<Tree::RB::Node> compat.
-
-=item next
-
-The next node in the sequence of keys.  Alias C<successor> for C<Tree::RB::Node> compat.
-
-=item recent_tracked
-
-Returns whether node has its insertion order tracked, or not.  This attribute can also be
-written.  Disabling recent_tracked removes it from the list of insertion order.  Enabling
-recent_tracked causes the node to be placed as the newest inserted node, the same as
-L</mark_newest>.
-
-=item mark_newest
-
-Promote this node to the end of the insertion-order tracking list as if it has just been
-inserted.
-
-=item older
-
-  $older= $node->older;
-  $node->older($insert_before);
-
-The previous node in insertion-order.  Always C<undef> unless node is L</recent_tracked>.
-When written, it places that node before this node in the "recent" list.
-
-=item newer
-
-  $older= $node->newer;
-  $node->newer($insert_after);
-
-The next node in insertion-order.  Always C<undef> unless node is L</recent_tracked>.
-When written, it places that node after this node in the "recent" list.
-
-=item tree
-
-The tree this node belongs to.  This becomes C<undef> if the tree is freed or if the node
-is pruned from the tree.
-
-=item left
-
-The left sub-tree.
-
-=item left_leaf
-
-The left-most leaf of the sub-tree.  Alias C<min> for C<Tree::RB::Node> compat.
-
-=item right
-
-The right sub-tree.
-
-=item right_leaf
-
-The right-most child of the sub-tree.  Alias C<max> for C<Tree::RB::Node> compat.
-
-=item parent
-
-The parent node, if any.
-
-=item color
-
-0 = black, 1 = red.
-
-=item count
-
-The number of items in the tree rooted at this node (inclusive)
-
-=back
-
-=cut
-
 *Tree::RB::XS::Node::min=         *Tree::RB::XS::Node::left_leaf;
 *Tree::RB::XS::Node::max=         *Tree::RB::XS::Node::right_leaf;
 *Tree::RB::XS::Node::successor=   *Tree::RB::XS::Node::next;
 *Tree::RB::XS::Node::predecessor= *Tree::RB::XS::Node::prev;
-
-=pod
-
-=head2 Node Methods
-
-=over
-
-=item prune
-
-Remove this single node from the tree.  The node will still have its key and value,
-but all attributes linking to other nodes will become C<undef>.
-
-=item strip
-
-Remove all children of this node, optionally calling a callback for each.
-For compat with L<Tree::RB::Node/strip>.
-
-=item as_lol
-
-Return sub-tree as list-of-lists. (array of arrays rather?)
-For compat with L<Tree::RB::Node/as_lol>.
-
-=item iter
-
-Shortcut for C<< $node->tree->iter($node) >>.
-
-=item rev_iter
-
-Shortcut for C<< $node->tree->rev_iter($node) >>.
-
-=item iter_newer
-
-Shortcut for C<< $node->tree->iter_old_to_new($node) >>.
-
-=item iter_older
-
-Shortcut for C<< $node->tree->iter_new_to_old($node) >>.
-
-=back
-
-=cut
 
 sub Tree::RB::XS::Node::strip {
 	my ($self, $cb)= @_;
@@ -895,10 +770,6 @@ the intent in Tree::RB?)
 =back
 
 =cut
-
-*TIEHASH= *new;
-*STORE= *put;
-*CLEAR= *clear;
 
 sub hseek {
 	my ($self, $key, $opts)= @_;
