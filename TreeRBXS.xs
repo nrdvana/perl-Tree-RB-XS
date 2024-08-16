@@ -2752,10 +2752,11 @@ newer(item, newval=NULL)
 		if (newval) {
 			if (!next)
 				croak("Can't insert relative to a node that isn't recent_tracked");
+			if (!tree) croak("Node was removed from tree");
 			TreeRBXS_recent_insert_before(tree, newval, next);
 			next= &newval->recent;
 		}
-		RETVAL= (!next || next == &tree->recent)? NULL
+		RETVAL= (!next || !tree || next == &tree->recent)? NULL
 			: GET_TreeRBXS_item_FROM_recent(next);
 	OUTPUT:
 		RETVAL
@@ -2771,10 +2772,11 @@ older(item, newval=NULL)
 		if (newval) {
 			if (!prev)
 				croak("Can't insert relative to a node that isn't recent_tracked");
+			if (!tree) croak("Node was removed from tree");
 			TreeRBXS_recent_insert_before(tree, newval, &item->recent);
 			prev= &newval->recent;
 		}
-		RETVAL= (!prev || prev == &tree->recent)? NULL
+		RETVAL= (!prev || !tree || prev == &tree->recent)? NULL
 			: GET_TreeRBXS_item_FROM_recent(prev);
 	OUTPUT:
 		RETVAL
@@ -2866,7 +2868,7 @@ prune(item)
 		RETVAL
 
 void
-recent_tracked(item, newval)
+recent_tracked(item, newval=NULL)
 	struct TreeRBXS_item *item
 	SV* newval
 	INIT:
@@ -2874,6 +2876,7 @@ recent_tracked(item, newval)
 	PPCODE:
 		if (items > 1) {
 			tree= TreeRBXS_item_get_tree(item);
+			if (!tree) croak("Node was removed from tree");
 			if (SvTRUE(newval))
 				TreeRBXS_recent_insert_before(tree, item, &tree->recent);
 			else
@@ -2890,6 +2893,7 @@ mark_newest(item)
 	INIT:
 		struct TreeRBXS *tree= TreeRBXS_item_get_tree(item);
 	PPCODE:
+		if (!tree) croak("Node was removed from tree");
 		TreeRBXS_recent_insert_before(tree, item, &tree->recent);
 		XSRETURN(1);
 
@@ -2899,6 +2903,7 @@ mark_oldest(item)
 	INIT:
 		struct TreeRBXS *tree= TreeRBXS_item_get_tree(item);
 	PPCODE:
+		if (!tree) croak("Node was removed from tree");
 		TreeRBXS_recent_insert_before(tree, item, tree->recent.next);
 		XSRETURN(1);
 

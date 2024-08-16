@@ -110,7 +110,8 @@ The parent node, if any.
 
 =head2 count
 
-The number of items in the tree rooted at this node (inclusive)
+The number of items in the tree rooted at this node (inclusive).  This becomes 0 if the node
+is no longer in the tree.
 
 =head1 METHODS
 
