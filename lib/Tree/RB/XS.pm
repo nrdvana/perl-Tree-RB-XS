@@ -255,7 +255,7 @@ comparison functions.
 Boolean, read/write.  Controls whether L</insert> will allow additional nodes with
 keys that already exist in the tree.  This does not change the behavior of L</put>,
 only L</insert>.  If you set this to false, it does not remove duplicates that
-already existed.  The initial value is false.
+already exist in the tree.  The initial value is false.
 
 =head2 compat_list_get
 

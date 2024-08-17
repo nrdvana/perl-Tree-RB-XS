@@ -3,10 +3,6 @@
 require Tree::RB::XS;
 __END__
 
-=head1 NAME
-
-Tree::RB::XS::Node
-
 =head1 SYNOPSIS
 
   my $node= $tree->get_node('x');
@@ -21,10 +17,10 @@ Tree::RB::XS::Node
 
 =head1 DESCRIPTION
 
-Node objects represent an internal node of the Red/Black tree.  Tree nodes exists as lightweight
-C structs until you access it from Perl, at which time it inflates to become a blessed hashref
+Node objects represent an internal node of the Red/Black tree.  A tree node exists as lightweight
+C struct until you access it from Perl, at which time it inflates to become a blessed hashref
 object.  This object does not hold a strong reference to the tree; if the tree goes out of scope,
-the nodes remain but no longer have a relation to eachother.
+the node object remains but no longer has a relation to other nodes.
 
 Nodes can only be created by a tree, and cannot be re-inserted once pruned.
 
@@ -118,7 +114,8 @@ is no longer in the tree.
 =head2 prune
 
 Remove this single node from the tree.  The node will still have its key and value,
-but all attributes linking to other nodes will become C<undef>.
+but all attributes linking to other nodes will become C<undef>, and L</count> becomes
+zero.
 
 =head2 strip
 
