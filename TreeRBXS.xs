@@ -248,6 +248,7 @@ struct dllist_node {
 struct TreeRBXS {
 	SV *owner;                     // points to Tree::RB::XS internal HV (not ref)
 	TreeRBXS_cmp_fn *compare;      // internal compare function.  Always set and never changed.
+	TreeRBXS_xform_fn *transform;  // internal key-transformation function, applied before key comparisons.
 	SV *compare_callback;          // user-supplied compare.  May be NULL, but can never be changed.
 	int key_type;                  // must always be set and never changed
 	int compare_fn_id;             // indicates which compare is in use, for debugging
@@ -305,7 +306,8 @@ struct TreeRBXS_item {
 	struct TreeRBXS_iter *iter; // linked list of iterators who reference this item
 	struct dllist_node recent;  // doubly linked list of insertion order tracking
 	SV *value;            // value will be set unless struct is just used as a search key
-	size_t key_type: 4,
+	size_t key_type: 3,
+	       orig_key_stored: 1,
 #if SIZE_MAX == 0xFFFFFFFF
 #define CKEYLEN_MAX ((((size_t)1)<<28)-1)
 	       ckeylen: 28;
@@ -315,6 +317,16 @@ struct TreeRBXS_item {
 #endif
 	char extra[];
 };
+
+static SV* GET_TreeRBXS_item_ORIG_KEY(struct TreeRBXS_item *item) {
+	SV *k= NULL;
+	if (item->orig_key_stored)
+		memcpy(&k, item->extra, sizeof(SV*));
+	return k;
+}
+#define SET_TreeRBXS_item_ORIG_KEY(item, key) memcpy(item->extra, &key, sizeof(SV*))
+#define GET_TreeRBXS_stack_item_ORIG_KEY(item) ((item)->owner)
+#define SET_TreeRBXS_stack_item_ORIG_KEY(item, key) ((item)->owner= (key))
 
 static void TreeRBXS_init_tmp_item(struct TreeRBXS_item *item, struct TreeRBXS *tree, SV *key, SV *value);
 static struct TreeRBXS_item * TreeRBXS_new_item_from_tmp_item(struct TreeRBXS_item *src);
@@ -417,6 +429,7 @@ struct TreeRBXS_iter * TreeRBXS_get_hashiter(struct TreeRBXS *tree) {
  * This initializes a temporary incomplete item on the stack that can be
  * used for searching without the expense of allocating buffers etc.
  * The temporary item does not require any destructor/cleanup.
+ * (and, the destructor *must not* be called on the stack item)
  */
 static void TreeRBXS_init_tmp_item(struct TreeRBXS_item *item, struct TreeRBXS *tree, SV *key, SV *value) {
 	size_t len= 0;
@@ -425,7 +438,16 @@ static void TreeRBXS_init_tmp_item(struct TreeRBXS_item *item, struct TreeRBXS *
 	memset(item, 0, sizeof(*item));
 	// copy key type from tree
 	item->key_type= tree->key_type;
+	// If there's a transform function, apply that first
+	if (tree->transform) {
+		SET_TreeRBXS_stack_item_ORIG_KEY(item, key); // temporary storage for original key
+		item->orig_key_stored= 1;
+		key= tree->transform(tree, key); // returns a mortal SV
+	}
+	else item->orig_key_stored= 0;
+
 	// set up the keys.  
+	item->ckeylen= 0;
 	switch (item->key_type) {
 	case KEY_TYPE_ANY:
 	case KEY_TYPE_CLAIM: item->keyunion.svkey= key; break;
@@ -456,17 +478,50 @@ static void TreeRBXS_init_tmp_item(struct TreeRBXS_item *item, struct TreeRBXS *
  */
 static struct TreeRBXS_item * TreeRBXS_new_item_from_tmp_item(struct TreeRBXS_item *src) {
 	struct TreeRBXS_item *dst;
-	size_t len;
+	size_t keyptr_len, strbuf_len;
+	bool is_buffered_key= src->key_type == KEY_TYPE_USTR || src->key_type == KEY_TYPE_BSTR;
 	/* If the item references a string that is not managed by a SV,
-	  copy that into the space at the end of the allocated block. */
-	if (src->key_type == KEY_TYPE_USTR || src->key_type == KEY_TYPE_BSTR) {
-		len= src->ckeylen;
-		Newxc(dst, sizeof(struct TreeRBXS_item) + len + 1, char, struct TreeRBXS_item);
+	   copy that into the space at the end of the allocated block.
+	   Also, if 'owner' is set, it is holding the original SV key
+	   which the stack item was initialized from, and also means that
+	   a transform function is in effect.
+	   The node needs to hold onto the original key, which gets stored
+	   at the end of the buffer area */
+	if (src->orig_key_stored || is_buffered_key) {
+		strbuf_len= is_buffered_key? src->ckeylen+1 : 0;
+		keyptr_len= src->orig_key_stored? sizeof(SV*) : 0;
+		Newxc(dst, sizeof(struct TreeRBXS_item) + keyptr_len + strbuf_len, char, struct TreeRBXS_item);
 		memset(dst, 0, sizeof(struct TreeRBXS_item));
-		memcpy(dst->extra, src->keyunion.ckey, len);
-		dst->extra[len]= '\0';
-		dst->keyunion.ckey= dst->extra;
-		dst->ckeylen= src->ckeylen;
+		if (keyptr_len) {
+			// make a copy of the SV, unless requested to take ownership of keys
+			SV *kept= GET_TreeRBXS_stack_item_ORIG_KEY(src);
+			kept= src->key_type == KEY_TYPE_CLAIM? SvREFCNT_inc(kept) : newSVsv(kept);
+			SvREADONLY_on(kept);
+			// I don't want to bother aligning this since it's seldomly accessed anyway.
+			SET_TreeRBXS_item_ORIG_KEY(dst, kept);
+		}
+		if (is_buffered_key) {
+			char *dst_buf= dst->extra + keyptr_len;
+			memcpy(dst_buf, src->keyunion.ckey, src->ckeylen);
+			dst_buf[src->ckeylen]= '\0';
+			dst->keyunion.ckey= dst_buf;
+			dst->ckeylen= src->ckeylen;
+		}
+		else {
+			switch (src->key_type) {
+			// when the key has been transformed, it is a mortal pointer and waiting to be claimed
+			// so TYPE_ANY and TYPE_CLAIM do the same thing here.
+			case KEY_TYPE_ANY:
+			case KEY_TYPE_CLAIM:
+				dst->keyunion.svkey= src->keyunion.svkey;
+				SvREADONLY_on(dst->keyunion.svkey);
+				break;
+			case KEY_TYPE_INT:   dst->keyunion.ikey=  src->keyunion.ikey; break;
+			case KEY_TYPE_FLOAT: dst->keyunion.nkey=  src->keyunion.nkey; break;
+			default:
+				croak("BUG: un-handled key_type %d", src->key_type);
+			}
+		}
 	}
 	else {
 		Newxz(dst, 1, struct TreeRBXS_item);
@@ -482,6 +537,7 @@ static struct TreeRBXS_item * TreeRBXS_new_item_from_tmp_item(struct TreeRBXS_it
 			croak("BUG: un-handled key_type %d", src->key_type);
 		}
 	}
+	dst->orig_key_stored= src->orig_key_stored;
 	dst->key_type= src->key_type;
 	dst->value= newSVsv(src->value);
 	return dst;
@@ -508,6 +564,10 @@ static void TreeRBXS_item_free(struct TreeRBXS_item *item) {
 	switch (item->key_type) {
 	case KEY_TYPE_ANY:
 	case KEY_TYPE_CLAIM: SvREFCNT_dec(item->keyunion.svkey); break;
+	}
+	if (item->orig_key_stored) {
+		SV *tmp= GET_TreeRBXS_item_ORIG_KEY(item);
+		SvREFCNT_dec(tmp);
 	}
 	if (item->value)
 		SvREFCNT_dec(item->value);
@@ -907,8 +967,9 @@ TreeRBXS_insert_item(struct TreeRBXS *tree, struct TreeRBXS_item *stack_item, bo
 	struct TreeRBXS_item *item;
 	rbtree_node_t *hint, *tmpnode, *first, *last;
 	int cmp;
-	// If newly inserted items have been adjacent to prev_inserted_item 3 or more times in a row,
-	// It is worth comparing them with that first.
+	/* If newly inserted items have been adjacent to prev_inserted_item 3 or more times in a row,
+	   It is worth comparing them with that first.  This optimization results in nearly linear
+	   insertion time when the keys are pre-sorted. */
 	if (tree->prev_inserted_trend >= INSERT_TREND_TRIGGER) {
 		if (tree->prev_inserted_trend > INSERT_TREND_CAP)
 			tree->prev_inserted_trend= INSERT_TREND_CAP;
@@ -978,6 +1039,19 @@ TreeRBXS_insert_item(struct TreeRBXS *tree, struct TreeRBXS_item *stack_item, bo
 			if (oldval_out)
 				*oldval_out= item->value; // return the old value
 			item->value= newSVsv(stack_item->value); // store new copy of supplied param
+			/* If the tree is applying a transform to the items, the new key might not be identical
+			   to the old, even though the transformed keys are equal.  (i.e. different case)
+			   So, store the new key in its place. */
+			if (item->orig_key_stored) {
+				SV *orig_key= GET_TreeRBXS_item_ORIG_KEY(item);
+				SV *new_key= GET_TreeRBXS_stack_item_ORIG_KEY(stack_item);
+				if (sv_cmp(orig_key, new_key)) {
+					SvREFCNT_dec(orig_key);
+					orig_key= newSVsv(new_key);
+					SvREADONLY_on(orig_key);
+					SET_TreeRBXS_item_ORIG_KEY(item, orig_key);
+				}
+			}
 			if (tree->track_recent || item->recent.next)
 				TreeRBXS_recent_insert_before(tree, item, &tree->recent);
 			tree->prev_inserted_dup= false;
@@ -1400,6 +1474,10 @@ static SV* TreeRBXS_wrap_item(struct TreeRBXS_item *item) {
 static SV* TreeRBXS_item_wrap_key(struct TreeRBXS_item *item) {
 	if (!item)
 		return &PL_sv_undef;
+	if (item->orig_key_stored) {
+		SV *tmp= GET_TreeRBXS_item_ORIG_KEY(item);
+		return SvREFCNT_inc(tmp);
+	}
 	switch (item->key_type) {
 	case KEY_TYPE_ANY:
 	case KEY_TYPE_CLAIM: return SvREFCNT_inc(item->keyunion.svkey);
