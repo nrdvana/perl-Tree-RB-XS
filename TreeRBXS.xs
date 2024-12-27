@@ -2595,6 +2595,53 @@ newest_node(tree, newval= NULL)
 	OUTPUT:
 		RETVAL
 
+void
+keys(tree)
+	struct TreeRBXS *tree
+	ALIAS:
+		Tree::RB::XS::values             = 1
+		Tree::RB::XS::kv                 = 2
+		Tree::RB::XS::reverse_keys       = 4
+		Tree::RB::XS::reverse_values     = 5
+		Tree::RB::XS::reverse_kv         = 6
+	INIT:
+		size_t n_ret, i, node_count= TreeRBXS_get_count(tree);
+		rbtree_node_t *node;
+		rbtree_node_t *(*start)(rbtree_node_t *)= (ix & 4)? rbtree_node_right_leaf : rbtree_node_left_leaf;
+		rbtree_node_t *(*step)(rbtree_node_t *)= (ix & 4)? rbtree_node_prev : rbtree_node_next;
+	PPCODE:
+		if (GIMME_V == G_VOID) {
+			n_ret= 0;
+		}
+		else if (GIMME_V == G_SCALAR) {
+			n_ret= 1;
+			ST(0)= sv_2mortal(newSViv(node_count));
+		}
+		else {
+			n_ret= ix == 2? node_count*2 : node_count;
+			EXTEND(SP, n_ret);
+			node= start(TreeRBXS_get_root(tree));
+			if ((ix & 3) == 0) {
+				for (i= 0; i < n_ret && node; i++, node= step(node))
+					ST(i)= sv_2mortal(TreeRBXS_item_wrap_key(GET_TreeRBXS_item_FROM_rbnode(node)));
+			}
+			else if ((ix & 3) == 1) {
+				for (i= 0; i < n_ret && node; i++, node= step(node))
+					ST(i)= GET_TreeRBXS_item_FROM_rbnode(node)->value;
+			}
+			else {
+				for (i= 0; i < n_ret && node; node= step(node)) {
+					ST(i)= sv_2mortal(TreeRBXS_item_wrap_key(GET_TreeRBXS_item_FROM_rbnode(node)));
+					i++;
+					ST(i)= GET_TreeRBXS_item_FROM_rbnode(node)->value;
+					i++;
+				}
+			}
+			if (i != n_ret || node != NULL)
+				croak("BUG: expected %ld nodes but found %ld", (long) (n_ret>>1), (long) ((ix & 3) == 2? i : (i>>1)));
+		}
+		XSRETURN(n_ret);
+
 SV *
 FIRSTKEY(tree)
 	struct TreeRBXS *tree

@@ -525,6 +525,31 @@ If there are fewer than C<$max_count> nodes with insertion-order tracking, this 
 This is the fastest way to remove all nodes from the tree.  It gets to destroy all
 the nodes without worrying about the tree structure or shifting iterators aside.
 
+=head2 keys
+
+Return a list of all keys in the tree, in sorted order.  If your tree is large, consider using
+an iterator instead of putting all keys onto the perl stack at once.
+
+=head2 reverse_keys
+
+Same, but in reverse sorted order.
+
+=head2 values
+
+Return a list of all values in the tree, in the same order as the keys.
+
+=head2 reverse_values
+
+Same, but in reverse order.
+
+=head2 kv
+
+Return all the key/value pairs of the tree, as a list.
+
+=head2 reverse_kv
+
+Return all the key/value pairs as a list in reverse key order.
+
 =head2 iter
 
   my $iter= $tree->iter;                              # from min_node
