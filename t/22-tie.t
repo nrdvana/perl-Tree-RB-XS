@@ -48,4 +48,57 @@ untie %example;
 is( [ keys %example ], [], 'untied' );
 is( $t, undef, 'tree freed' );
 
+# These are the tests from Tie::CPHash, to verify that Tree::RB::XS can behave identically
+subtest tie_cphash_tests => sub {
+	my (%h, $j, $test);
+	tie(%h, 'Tree::RB::XS', compare_fn => 'foldcase');
+	ok( 1, 'tied %h' );
+	is( $h{Hello}, undef, "Hello not yet defined");
+	ok( !exists $h{Hello}, "Hello does not exist");
+	SKIP: {
+		skip 'SCALAR added in Perl 5.8.3', 1 unless $] >= 5.008003;
+		ok((not scalar %h), 'SCALAR empty');
+	};
+	$h{Hello}= 'World';
+	$j= $h{HeLLo};
+	is( $j, 'World', 'HeLLo - World' );
+	is( [keys %h], ['Hello'], 'last key Hello' );
+	ok( exists $h{Hello}, "Hello now exists" );
+	$h{World}= 'HW';
+	$h{HELLO}= $h{World};
+	is( tied(%h)->get_node('hello')->key, 'HELLO', 'last key HELLO' );
+	SKIP: {
+		skip 'SCALAR added in Perl 5.8.3', 1 unless $] >= 5.008003;
+		ok( scalar %h, 'SCALAR not empty' );
+	};
+	is( delete $h{Hello}, 'HW', "deleted Hello" );
+	is( delete $h{Hello}, undef, "can't delete Hello twice" );
+	SKIP: {
+		skip 'SCALAR added in Perl 5.8.3', 1 unless $] >= 5.008003;
+		ok( scalar %h, 'SCALAR still not empty' );
+	};
+	is( tied(%h)->get_node('hello'), undef, 'hello not in keys' );
+	tied(%h)->put(qw(HeLlO world));
+	is( $h{world}, 'HW', 'World still exists' );
+	is( $h{hello}, 'world', 'hello was pushed' );
+	is( tied(%h)->get_node('hello')->key, 'HeLlO', 'hello is HeLlO' );
+	is( tied(%h)->get_node('world')->key, 'World', 'world is World' );
+	%h= ();
+	SKIP: {
+		skip 'SCALAR added in Perl 5.8.3', 1 unless $] >= 5.008003;
+		ok( !scalar %h, 'SCALAR now empty' );
+	};
+	{
+		my %i;
+		tie( %i, 'Tree::RB::XS', compare_fn => 'foldcase', kv => [Hello => 'World'] );
+		is( $i{hello}, 'World', 'initialized from list' );
+		is( tied(%i)->get_node('hello')->key, 'Hello', 'list remembers case' );
+	}
+	{
+		tie( my %i, 'Tree::RB::XS', compare_fn => 'foldcase', kv => [qw(Hello World  hello world)] );
+		is( $i{Hello}, 'world', '1 line initialized from list' );
+		is( tied(%i)->get_node('Hello')->key, 'hello', '1 line remembers case' );
+	}
+};
+
 done_testing;
