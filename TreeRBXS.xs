@@ -104,17 +104,22 @@ static TreeRBXS_cmp_fn TreeRBXS_cmp_numsplit;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_perl;
 static TreeRBXS_cmp_fn TreeRBXS_cmp_perl_cb;
 
+typedef SV* TreeRBXS_xform_fn(struct TreeRBXS *tree, SV *orig_key);
+static TreeRBXS_xform_fn TreeRBXS_xform_fc;
+
 /* These get serialized as bytes for Storable, so should not change,
  * or else STORABLE_thaw needs adapted.
  */
-#define CMP_PERL    1
-#define CMP_INT     2
-#define CMP_FLOAT   3
-#define CMP_MEMCMP  4
-#define CMP_UTF8    5
-#define CMP_SUB     6
-#define CMP_NUMSPLIT 7
-#define CMP_MAX     7
+#define CMP_PERL        1
+#define CMP_INT         2
+#define CMP_FLOAT       3
+#define CMP_MEMCMP      4
+#define CMP_STR         5
+#define CMP_SUB         6
+#define CMP_NUMSPLIT    7
+#define CMP_FOLDCASE    8
+#define CMP_NUMSPLIT_FOLDCASE 9
+#define CMP_MAX         9
 
 static int parse_cmp_fn(SV *cmp_sv) {
 	const char *str;
@@ -133,12 +138,15 @@ static int parse_cmp_fn(SV *cmp_sv) {
 			str += 4;
 			len -= 4;
 		}
-		cmp_id= (len == 4 && foldEQ(str, "PERL",   4))? CMP_PERL
-		      : (len == 3 && foldEQ(str, "INT",    3))? CMP_INT
-		      : (len == 5 && foldEQ(str, "FLOAT",  5))? CMP_FLOAT
-		      : (len == 6 && foldEQ(str, "MEMCMP", 6))? CMP_MEMCMP
-		      : (len == 4 && foldEQ(str, "UTF8",   4))? CMP_UTF8
-		      : (len == 8 && foldEQ(str, "NUMSPLIT", 8))? CMP_NUMSPLIT
+		cmp_id= (len == 3 && foldEQ(str, "INT",          3))? CMP_INT
+		      : (len == 3 && foldEQ(str, "STR",          3))? CMP_STR
+		      : (len == 4 && foldEQ(str, "UTF8",         4))? CMP_STR // back-compat name
+		      : (len == 4 && foldEQ(str, "PERL",         4))? CMP_PERL
+		      : (len == 5 && foldEQ(str, "FLOAT",        5))? CMP_FLOAT
+		      : (len == 6 && foldEQ(str, "MEMCMP",       6))? CMP_MEMCMP
+		      : (len == 8 && foldEQ(str, "FOLDCASE",     8))? CMP_FOLDCASE
+		      : (len == 8 && foldEQ(str, "NUMSPLIT",     8))? CMP_NUMSPLIT
+		      : (len ==17 && foldEQ(str, "NUMSPLIT_FOLDCASE", 17))? CMP_NUMSPLIT_FOLDCASE
 		    //: (len == 7 && foldEQ(str, "SUB",    3))? CMP_SUB   can only be requested by a CV*
 		      : -1;
 	}
@@ -150,9 +158,12 @@ static const char * get_cmp_name(int cmp_id) {
 	case CMP_PERL:   return "CMP_PERL";
 	case CMP_INT:    return "CMP_INT";
 	case CMP_FLOAT:  return "CMP_FLOAT";
+	case CMP_STR:    return "CMP_STR";
+	case CMP_SUB:    return "CMP_SUB";
 	case CMP_MEMCMP: return "CMP_MEMCMP";
-	case CMP_UTF8:   return "CMP_UTF8";
-	case CMP_NUMSPLIT: return "CMP_NUMSPLIT";
+	case CMP_NUMSPLIT:    return "CMP_NUMSPLIT";
+	case CMP_FOLDCASE:     return "CMP_FOLDCASE";
+	case CMP_NUMSPLIT_FOLDCASE: return "CMP_NUMSPLIT_FOLDCASE";
 	default: return NULL;
 	}
 }
@@ -1306,6 +1317,31 @@ static int TreeRBXS_cmp_perl_cb(struct TreeRBXS *tree, struct TreeRBXS_item *a, 
     return ret;
 }
 
+// Equivalent of "return fc($key)"  (case folding)
+static SV* TreeRBXS_xform_fc(struct TreeRBXS *tree, SV *orig_key) {
+	SV *folded_mortal;
+	dSP;
+	/* Annoyingly, the 'fc' implementation is not packaged into the perl api
+	 * as a callable function, so I just have to invoke the perl op itself :-(
+	 * For 5.16 and onward I can call CORE::fc, but before that I even need
+	 * to wrap the op in my own sub.  (see XS.pm)
+	 */
+	ENTER;
+	PUSHMARK(SP);
+	XPUSHs(orig_key);
+	PUTBACK;
+#if PERL_VERSION_GE(5,16,0)
+	call_pv("CORE::fc", G_SCALAR);
+#else
+	call_pv("Tree::RB::XS::_fc_impl", G_SCALAR);
+#endif
+	SPAGAIN;
+	folded_mortal= POPs;
+	PUTBACK;
+	LEAVE;
+	return folded_mortal;
+}
+
 /*------------------------------------------------------------------------------------
  * Definitions of Perl MAGIC that attach C structs to Perl SVs
  * All instances of Tree::RB::XS have a magic-attached struct TreeRBXS
@@ -1693,7 +1729,7 @@ ssize_t init_tree_from_attr_list(
 			  key_type == KEY_TYPE_INT?   CMP_INT
 			: key_type == KEY_TYPE_FLOAT? CMP_FLOAT
 			: key_type == KEY_TYPE_BSTR?  CMP_MEMCMP
-			: key_type == KEY_TYPE_USTR?  CMP_UTF8
+			: key_type == KEY_TYPE_USTR?  CMP_STR
 			: key_type == KEY_TYPE_ANY?   CMP_PERL /* use Perl's cmp operator */
 			: key_type == KEY_TYPE_CLAIM? CMP_PERL
 			: CMP_PERL;
@@ -1708,7 +1744,9 @@ ssize_t init_tree_from_attr_list(
 		if (key_type != KEY_TYPE_CLAIM) tree->key_type= KEY_TYPE_ANY;
 		tree->compare= TreeRBXS_cmp_perl_cb;
 		break;
-	case CMP_UTF8:
+	case CMP_FOLDCASE:
+		tree->transform= TreeRBXS_xform_fc;
+	case CMP_STR:
 		tree->key_type= KEY_TYPE_USTR;
 		tree->compare= TreeRBXS_cmp_memcmp;
 		break;
@@ -1727,6 +1765,11 @@ ssize_t init_tree_from_attr_list(
 	case CMP_MEMCMP:
 		tree->key_type= KEY_TYPE_BSTR;
 		tree->compare= TreeRBXS_cmp_memcmp;
+		break;
+	case CMP_NUMSPLIT_FOLDCASE:
+		tree->key_type= KEY_TYPE_USTR;
+		tree->transform= TreeRBXS_xform_fc;
+		tree->compare= TreeRBXS_cmp_numsplit;
 		break;
 	case CMP_NUMSPLIT:
 		if (key_type != KEY_TYPE_USTR && key_type != KEY_TYPE_ANY && key_type != KEY_TYPE_CLAIM)
@@ -2095,10 +2138,10 @@ STORABLE_thaw(objref, cloning, serialized, attrs)
 		sb= (const unsigned char*) SvPV(serialized, sb_len);
 		if (sb_len < 10)
 			croak("Expected at least 10 bytes of serialized data");
-		version=  sb[0] + (sb[1] << 8) + (sb[2] << 16) + (sb[3] << 24);
-		key_type= sb[4] + (sb[5] << 8);
-		cmp_id=   sb[6] + (sb[7] << 8);
-		flags=    sb[8] + (sb[9] << 8);
+		version=  sb[0] + (sb[1] << 8) + (sb[2] << 16) + (sb[3] << 24); // 4 bytes LE
+		key_type= sb[4] + (sb[5] << 8);                                 // 2 bytes LE
+		cmp_id=   sb[6] + (sb[7] << 8);                                 // 2 bytes LE
+		flags=    sb[8] + (sb[9] << 8);                                 // 2 bytes LE
 
 		if (version <= 0)
 			croak("Invalid serialized version");
@@ -2118,6 +2161,9 @@ STORABLE_thaw(objref, cloning, serialized, attrs)
 		if (cmp_id <= 0 || cmp_id > CMP_MAX)
 			croak("Invalid serialized compare_fn");
 		tree->compare_fn_id= cmp_id;
+		/* These two comparison function codes imply a transform function */
+		if (cmp_id == CMP_FOLDCASE || cmp_id == CMP_NUMSPLIT_FOLDCASE)
+			tree->transform= TreeRBXS_xform_fc;
 
 		/* attr_vec gets modified, so make a copy of attrs' AvARRAY */
 		Newx(attr_list, attr_len, SV*);
@@ -3379,9 +3425,11 @@ BOOT:
 	EXPORT_ENUM(CMP_PERL);
 	EXPORT_ENUM(CMP_INT);
 	EXPORT_ENUM(CMP_FLOAT);
-	EXPORT_ENUM(CMP_UTF8);
+	EXPORT_ENUM(CMP_STR);
+	EXPORT_ENUM(CMP_FOLDCASE);
 	EXPORT_ENUM(CMP_MEMCMP);
 	EXPORT_ENUM(CMP_NUMSPLIT);
+	EXPORT_ENUM(CMP_NUMSPLIT_FOLDCASE);
 	EXPORT_ENUM(GET_EQ);
 	EXPORT_ENUM(GET_OR_ADD);
 	EXPORT_ENUM(GET_EQ_LAST);

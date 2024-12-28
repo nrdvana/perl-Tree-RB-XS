@@ -77,9 +77,36 @@ subtest custom_tree => sub {
 	is( $tref, undef, 'tree freed' );
 };
 
+subtest foldcase_tree => sub {
+	my $tree= Tree::RB::XS->new(compare_fn => CMP_FOLDCASE);
+	weaken(my $tref= $tree);
+	like( $tree, $looks_like_tree, 'is a tree obj' );
+	is( $tree->key_type, KEY_TYPE_USTR, 'key_type' );
+	is( $tree->compare_fn, CMP_FOLDCASE, 'compare_fn' );
+	undef $tree; # test destructor
+	is( $tref, undef, 'tree freed' );
+};
+
+subtest numsplit_fc_tree => sub {
+	my $tree= Tree::RB::XS->new(compare_fn => CMP_NUMSPLIT_FOLDCASE);
+	weaken(my $tref= $tree);
+	like( $tree, $looks_like_tree, 'is a tree obj' );
+	is( $tree->key_type, KEY_TYPE_USTR, 'key_type' );
+	is( $tree->compare_fn, CMP_NUMSPLIT_FOLDCASE, 'compare_fn' );
+	undef $tree; # test destructor
+	is( $tref, undef, 'tree freed' );
+};
+
 subtest type_by_name => sub {
 	my $tree= Tree::RB::XS->new(key_type => 'KEY_TYPE_BSTR');
 	is( $tree->key_type, KEY_TYPE_BSTR, 'key_type' );
+};
+
+subtest cmp_by_name => sub {
+	my $tree= Tree::RB::XS->new(compare_fn => 'CMP_NUMSPLIT_FOLDCASE');
+	is( $tree->compare_fn, CMP_NUMSPLIT_FOLDCASE, 'compare_fn' );
+	$tree= Tree::RB::XS->new(compare_fn => 'numsplit_foldcase');
+	is( $tree->compare_fn, CMP_NUMSPLIT_FOLDCASE, 'compare_fn' );
 };
 
 { package Mock::Array;

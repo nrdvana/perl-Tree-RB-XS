@@ -11,7 +11,8 @@ require XSLoader;
 XSLoader::load('Tree::RB::XS', $Tree::RB::XS::VERSION);
 use Exporter 'import';
 our @_key_types= qw( KEY_TYPE_ANY KEY_TYPE_INT KEY_TYPE_FLOAT KEY_TYPE_BSTR KEY_TYPE_USTR );
-our @_cmp_enum= qw( CMP_PERL CMP_INT CMP_FLOAT CMP_MEMCMP CMP_UTF8 CMP_NUMSPLIT );
+our @_cmp_enum= qw( CMP_PERL CMP_INT CMP_FLOAT CMP_MEMCMP CMP_STR CMP_UTF8 CMP_FOLDCASE CMP_NUMSPLIT CMP_NUMSPLIT_FOLDCASE );
+*CMP_UTF8= *CMP_STR; # back-compat
 our @_lookup_modes= qw( GET_EQ GET_EQ_LAST GET_GT GET_LT GET_GE GET_LE GET_LE_LAST GET_NEXT GET_PREV
                         GET_OR_ADD LUEQUAL LUGTEQ LULTEQ LUGREAT LULESS LUNEXT LUPREV );
 our @EXPORT_OK= (@_key_types, @_cmp_enum, @_lookup_modes, 'cmp_numsplit');
@@ -22,6 +23,13 @@ our %EXPORT_TAGS= (
 	get      => \@_lookup_modes,
 	all      => \@EXPORT_OK,
 );
+
+if ($] < 5.016) {
+   # Before 5.16, XS can't call CORE::fc,
+   # and before 5.14 fc didn't exist so the best we can do is 'lc'
+   eval($] >= 5.014? 'sub _fc_impl { fc shift }' : 'sub _fc_impl { lc shift }');
+}
+
 
 =head1 SYNOPSIS
 
@@ -236,10 +244,13 @@ Specifies the function that compares keys.  Read-only; pass as an option to
 the constructor.
 
 This is one of: L</CMP_PERL> (default), L</CMP_INT>, L</CMP_FLOAT>, L</CMP_MEMCMP>,
-L</CMP_UTF8>, L</CMP_NUMSPLIT>, or a coderef.  C<CMP_INT> and C<CMP_FLOAT> are the
-most efficient, and internally store the key as a number.  C<CMP_MEMCMP> and
-C<CMP_UTF8> copy the key into an internal buffer, and offer moderate speed gains
-over C<CMP_PERL>.  C<CMP_PERL> is Perl's own C<cmp> operator.
+L</CMP_STR>, L</CMP_FOLDCASE>, L</CMP_NUMSPLIT>, L</CMP_NUMSPLIT_FOLDCASE> or a coderef.
+C<CMP_INT> and C<CMP_FLOAT> are the most efficient, and internally store the key as a number.
+C<CMP_MEMCMP> and C<CMP_STR> copy the key into an internal buffer, and offer moderate speed
+gains over C<CMP_PERL>.  C<CMP_PERL> is Perl's own C<cmp> operator.  C<CMP_FOLDCASE> is for
+case-insensitive sorting (applies 'fc' to the keys before comparing) and C<CMP_NUMSPLIT> is
+a "natural sort" that compares numeric segments of the key as numbers while comparing the rest
+as a string.  It also has a 'fc' variant.
 
 If set to a coderef, it should take two parameters and return an integer
 indicating their order in the same manner as Perl's C<cmp>.
@@ -852,9 +863,18 @@ Compare keys directly as whatever integer type Perl was compiled with.
 Compare the keys directly as whatever floating-point type Perl was compiled with.
 (i.e. 64-bit double or 80-bit long double)
 
-=item CMP_UTF8
+=item CMP_STR
 
-Compare the keys as UTF8 byte strings, using Perl's internal C<bytes_cmp_utf8> function.
+Flattens the keys to UTF8 byte sequences and then uses Perl's internal C<bytes_cmp_utf8>
+function, for normal text sorting at higher speeds than plain 'cmp'.
+
+=item CMP_FOLDCASE
+
+Same as CMP_STR, but apply perl's 'fc' (case-folding) operator before comparing.
+(on perls before 5.14, you get 'lc' instead)
+
+The case-folded string is cached in the tree node, so it only runs one 'fc' on your search
+string during searches.  Inspecting the key of that tree node shows your original string.
 
 =item CMP_MEMCMP
 
@@ -894,6 +914,11 @@ or
 
 If the C<key_type> is C<KEY_TYPE_BSTR> this will sort the string portions using
 C<memcmp>, else they are sorted with Perl's unicode-aware sort.
+
+=item CMP_NUMSPLIT_FOLDCASE
+
+Same as above, but the string parts are compared after case-folding them with Perl's
+'fc' function.  (on perls before 5.14, you get 'lc' instead)
 
 =item cmp_numsplit
 
