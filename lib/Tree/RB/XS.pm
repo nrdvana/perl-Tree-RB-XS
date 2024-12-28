@@ -94,6 +94,15 @@ LRU Cache feature:
   $tree->iter_older->next_keys(1e99);    # (1,2,3)
   @removed= $tree->truncate_recent(2);   # returns (3), leaves (2,1) in tree
 
+Case-folding tied hashes:
+
+  my %hash;
+  tie %hash, 'Tree::RB::XS', 'foldcase';
+  $hash{'content-type'}= 'text/plain';
+  $hash{'Content-Type'}= 'text/html';
+  say $hash{'content-type'}; # text/html
+  say keys %hash;            # Content-Type
+
 Fancy iterators:
 
   # iterator has 'current position'. inspect it, then step
@@ -1100,6 +1109,14 @@ benchmarks quite a bit faster.
 =item L<Hash::Ordered>
 
 The fastest pure-perl module on CPAN for ordered hashes / LRU caches.
+
+=item L<Tie::CPHash>
+
+This module lets you tie a hash so that hash keys become case-insensitive, but also preserve
+the case of the most recent 'put' operation.  This is a pure-perl implementation that is fairly
+fast and minimal.  Tree::RB::XS can do the same a bit faster with:
+
+  tie %hash, 'Tree::RB::XS', compare_fn => 'foldcase';
 
 =back
 
