@@ -1884,7 +1884,7 @@ new(obj_or_pkg, ...)
 		struct TreeRBXS *tree= NULL;
 		SV *objref= NULL, *tmpsv, **attr_list;
 		HV *obj_hv= NULL, *pkg= NULL;
-		SSize_t n_unknown, i;
+		SSize_t n_unknown, i, attr_len;
 	PPCODE:
 		if (sv_isobject(obj_or_pkg) && SvTYPE(SvRV(obj_or_pkg)) == SVt_PVHV) {
 			objref= obj_or_pkg;
@@ -1904,27 +1904,31 @@ new(obj_or_pkg, ...)
 		/* Special cases for 'new': it can be compare_fn, or a hashref */
 		if (items == 2) {
 			SV *first= ST(1);
-			/* non-ref means a compare_fn constant, likewide for coderef */
+			/* non-ref means a compare_fn constant, likewise for coderef */
 			if (!SvROK(first) || SvTYPE(SvRV(first)) == SVt_PVCV) {
 				Newx(attr_list, 2, SV*);
 				SAVEFREEPV(attr_list);
 				attr_list[0]= newSVpvs("compare_fn");
 				attr_list[1]= first;
+				attr_len= 2;
 			}
 			else if (SvTYPE(SvRV(first)) == SVt_PVHV) {
 				HV *attrhv= (HV*) SvRV(first);
-				ssize_t n= hv_iterinit(attrhv), i= 0;
-				HE *ent= hv_iternext(attrhv);
-				Newx(attr_list, n*2, SV*);
+				ssize_t n= hv_iterinit(attrhv);
+				HE *ent;
+				attr_len= n*2;
+				Newx(attr_list, attr_len, SV*);
 				SAVEFREEPV(attr_list);
-				while (ent && i < n) {
-					attr_list[i*2]= hv_iterkeysv(ent);
-					attr_list[i*2+1]= hv_iterval(attrhv, ent);
+				i= 0;
+				while ((ent= hv_iternext(attrhv)) && i < n) {
+					attr_list[i++]= hv_iterkeysv(ent);
+					attr_list[i++]= hv_iterval(attrhv, ent);
 				}
 			}
 			else croak("Expected compare_fn constant, coderef, hashref, or key/value pairs");
 		} else {
 			attr_list= PL_stack_base+ax+1;
+			attr_len= items - 1;
 		}
 
 		/* Upgrade this object to have TreeRBXS struct attached magically */
@@ -1932,7 +1936,7 @@ new(obj_or_pkg, ...)
 		if (tree->owner != (SV*) obj_hv)
 			croak("Tree was already initialized");
 
-		n_unknown= init_tree_from_attr_list(tree, attr_list, items-1);
+		n_unknown= init_tree_from_attr_list(tree, attr_list, attr_len);
 		if (n_unknown) {
 			/* if called by the public constructor, throw an error */
 			if (ix == 0)
