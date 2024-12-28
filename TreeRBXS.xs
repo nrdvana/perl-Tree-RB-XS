@@ -2425,6 +2425,7 @@ get(tree, key, mode_sv= NULL)
 	ALIAS:
 		Tree::RB::XS::get_node         = 0x00
 		Tree::RB::XS::get_key          = 0x01
+		Tree::RB::XS::key              = 0x01
 		Tree::RB::XS::FETCH            = 0x02
 		Tree::RB::XS::lookup           = 0x03
 		Tree::RB::XS::get              = 0x04
