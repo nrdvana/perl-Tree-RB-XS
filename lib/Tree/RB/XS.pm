@@ -25,9 +25,9 @@ our %EXPORT_TAGS= (
 );
 
 if ($] < 5.016) {
-   # Before 5.16, XS can't call CORE::fc,
-   # and before 5.14 fc didn't exist so the best we can do is 'lc'
-   eval($] >= 5.014? 'sub _fc_impl { fc shift }' : 'sub _fc_impl { lc shift }');
+   # Before 5.16, perl didn't have 'fc' and also XS can't call CORE::lc
+   eval('sub _fc_impl { lc shift } 1')
+      or die $@;
 }
 
 
@@ -162,6 +162,10 @@ Option to allow L<duplicate keys|/allow_duplicates> while preserving insertion o
 
 =item *
 
+Option to case-fold keys for comparisons while preserving the original key.
+
+=item *
+
 Optional linked-list of L<"recent" order|/track_recent>, to facilitate LRU or MRU caches.
 
 =back
@@ -252,14 +256,14 @@ assembled tree.  The list does not need to include all the nodes.
 Specifies the function that compares keys.  Read-only; pass as an option to
 the constructor.
 
-This is one of: L</CMP_PERL> (default), L</CMP_INT>, L</CMP_FLOAT>, L</CMP_MEMCMP>,
-L</CMP_STR>, L</CMP_FOLDCASE>, L</CMP_NUMSPLIT>, L</CMP_NUMSPLIT_FOLDCASE> or a coderef.
+This is one of: L</CMP_PERL> (default), L</CMP_INT>, L</CMP_FLOAT>, L</CMP_STR>, L</CMP_MEMCMP>,
+L</CMP_FOLDCASE>, L</CMP_NUMSPLIT>, L</CMP_NUMSPLIT_FOLDCASE> or a coderef.
 C<CMP_INT> and C<CMP_FLOAT> are the most efficient, and internally store the key as a number.
-C<CMP_MEMCMP> and C<CMP_STR> copy the key into an internal buffer, and offer moderate speed
-gains over C<CMP_PERL>.  C<CMP_PERL> is Perl's own C<cmp> operator.  C<CMP_FOLDCASE> is for
-case-insensitive sorting (applies 'fc' to the keys before comparing) and C<CMP_NUMSPLIT> is
-a "natural sort" that compares numeric segments of the key as numbers while comparing the rest
-as a string.  It also has a 'fc' variant.
+C<CMP_STR> and C<CMP_MEMCMP> copy the key into an internal buffer, and offer moderate speed
+gains over C<CMP_PERL>.  C<CMP_PERL> is Perl's own C<cmp> operator, which may handle objects
+with overloaded comparisons.  C<CMP_FOLDCASE> is for case-insensitive sorting (applies 'fc' to
+the keys before comparing) and C<CMP_NUMSPLIT> is a "natural sort" that compares numeric
+segments of the key as numbers while comparing the rest as a string.  It also has a 'fc' variant.
 
 If set to a coderef, it should take two parameters and return an integer
 indicating their order in the same manner as Perl's C<cmp>.
