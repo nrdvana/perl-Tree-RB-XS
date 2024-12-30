@@ -468,7 +468,7 @@ static void TreeRBXS_init_tmp_item(struct TreeRBXS_item *item, struct TreeRBXS *
 			item->keyunion.ckey= SvPVbyte(key, len);
 		// the ckeylen is a bit field, so can't go the full range of int
 		if (len > CKEYLEN_MAX)
-			croak("String length %ld exceeds maximum %ld for optimized key_type", (long)len, CKEYLEN_MAX);
+			croak("String length %ld exceeds maximum %ld for optimized key_type", (long)len, (long)CKEYLEN_MAX);
 		item->ckeylen= len;
 		break;
 	default:
