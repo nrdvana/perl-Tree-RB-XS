@@ -1898,7 +1898,7 @@ new(obj_or_pkg, ...)
 				Newx(attr_list, attr_len, SV*);
 				SAVEFREEPV(attr_list);
 				i= 0;
-				while ((ent= hv_iternext(attrhv)) && i < n) {
+				while ((ent= hv_iternext(attrhv)) && i < attr_len) {
 					attr_list[i++]= hv_iterkeysv(ent);
 					attr_list[i++]= hv_iterval(attrhv, ent);
 				}
