@@ -1429,13 +1429,9 @@ static struct TreeRBXS* TreeRBXS_get_magic_tree(SV *obj, int flags) {
 		return NULL;
 	}
 	sv= SvRV(obj);
-	if (SvMAGICAL(sv)) {
-        /* Iterate magic attached to this scalar, looking for one with our vtable */
-        for (magic= SvMAGIC(sv); magic; magic = magic->mg_moremagic)
-            if (magic->mg_type == PERL_MAGIC_ext && magic->mg_virtual == &TreeRBXS_magic_vt)
-                /* If found, the mg_ptr points to the fields structure. */
-                return (struct TreeRBXS*) magic->mg_ptr;
-    }
+	if (SvMAGICAL(sv) && (magic= mg_findext(sv, PERL_MAGIC_ext, &TreeRBXS_magic_vt)))
+		return (struct TreeRBXS*) magic->mg_ptr;
+
     if (flags & AUTOCREATE) {
         Newxz(tree, 1, struct TreeRBXS);
 		TreeRBXS_init(tree, sv);
@@ -1462,13 +1458,9 @@ static struct TreeRBXS_item* TreeRBXS_get_magic_item(SV *obj, int flags) {
 		return NULL;
 	}
 	sv= SvRV(obj);
-	if (SvMAGICAL(sv)) {
-        /* Iterate magic attached to this scalar, looking for one with our vtable */
-        for (magic= SvMAGIC(sv); magic; magic = magic->mg_moremagic)
-            if (magic->mg_type == PERL_MAGIC_ext && magic->mg_virtual == &TreeRBXS_item_magic_vt)
-                /* If found, the mg_ptr points to the fields structure. */
-                return (struct TreeRBXS_item*) magic->mg_ptr;
-    }
+	if (SvMAGICAL(sv) && (magic= mg_findext(sv, PERL_MAGIC_ext, &TreeRBXS_item_magic_vt)))
+		return (struct TreeRBXS_item*) magic->mg_ptr;
+
     if (flags & OR_DIE)
         croak("Object lacks 'struct TreeRBXS_item' magic");
 	return NULL;
@@ -1551,31 +1543,27 @@ static SV* TreeRBXS_wrap_iter(pTHX_ struct TreeRBXS_iter *iter) {
 static struct TreeRBXS_iter* TreeRBXS_get_magic_iter(SV *obj, int flags) {
 	SV *sv;
 	MAGIC* magic;
-    struct TreeRBXS_iter *iter;
+	struct TreeRBXS_iter *iter;
 	if (!sv_isobject(obj)) {
 		if (flags & OR_DIE)
 			croak("Not an object");
 		return NULL;
 	}
 	sv= SvRV(obj);
-	if (SvMAGICAL(sv)) {
-        /* Iterate magic attached to this scalar, looking for one with our vtable */
-        for (magic= SvMAGIC(sv); magic; magic = magic->mg_moremagic)
-            if (magic->mg_type == PERL_MAGIC_ext && magic->mg_virtual == &TreeRBXS_iter_magic_vt)
-                /* If found, the mg_ptr points to the fields structure. */
-                return (struct TreeRBXS_iter*) magic->mg_ptr;
-    }
-    if (flags & AUTOCREATE) {
-        Newxz(iter, 1, struct TreeRBXS_iter);
-        magic= sv_magicext(sv, NULL, PERL_MAGIC_ext, &TreeRBXS_iter_magic_vt, (const char*) iter, 0);
+	if (SvMAGICAL(sv) && (magic= mg_findext(sv, PERL_MAGIC_ext, &TreeRBXS_iter_magic_vt)))
+		return (struct TreeRBXS_iter*) magic->mg_ptr;
+
+	if (flags & AUTOCREATE) {
+		Newxz(iter, 1, struct TreeRBXS_iter);
+		magic= sv_magicext(sv, NULL, PERL_MAGIC_ext, &TreeRBXS_iter_magic_vt, (const char*) iter, 0);
 #ifdef USE_ITHREADS
-        magic->mg_flags |= MGf_DUP;
+		magic->mg_flags |= MGf_DUP;
 #endif
 		iter->owner= sv;
-        return iter;
-    }
-    else if (flags & OR_DIE)
-        croak("Object lacks 'struct TreeRBXS_iter' magic");
+		return iter;
+	}
+	else if (flags & OR_DIE)
+		croak("Object lacks 'struct TreeRBXS_iter' magic");
 	return NULL;
 }
 
