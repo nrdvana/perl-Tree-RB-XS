@@ -535,7 +535,7 @@ that you do want removed.
   $tree->rekey(
     offset => $n,
     min => $min_key_or_node_or_iter,
-    max => $max_key_or_Node_or_iter
+    max => $max_key_or_node_or_iter
   );
 
 This rewrites the keys of one or more nodes, like removing and re-adding the nodes with

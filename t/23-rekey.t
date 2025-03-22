@@ -35,13 +35,15 @@ subtest rekey_int_basic => sub {
 	is( [$tree->kv], [ 3,2, 5,1 ], 'truncate NV offset to integer' );
 	$tree->rekey(offset => -10);
 	is( [$tree->kv], [ -7,2, -5,1 ], 'negative offset' );
+};
 
+subtest rekey_int_overflow => sub {
 	my $uint_max= unpack "J", ("\xFF"x16);
 	my $int_max= $uint_max >> 1;
 	my $int_min= -$int_max - 1;
 	note "uint_max=$uint_max, int_max=$int_max, int_min=$int_min";
 
-	$tree= Tree::RB::XS->new(compare_fn => 'int', kv => [-1,-1, 1,1]);
+	my $tree= Tree::RB::XS->new(compare_fn => 'int', kv => [-1,-1, 1,1]);
 	# max key is 1, plus INT_MAX would overflow
 	like( err { $tree->rekey(offset => $int_max) }, qr/overflow/, 'int_max overflow' );
 	# min key is -1, plus INT_MIN would overflow
@@ -82,6 +84,16 @@ subtest rekey_float_basic => sub {
 	my $tree= Tree::RB::XS->new(compare_fn => 'float', kv => [ 1,1, 2,2, 4,4, 8,8 ]);
 	$tree->rekey(offset => 1);
 	is( [$tree->kv], [ 2,1, 3,2, 5,4, 9,8 ], 'shift float by 1' );
+};
+
+subtest rekey_min_to_max => sub {
+	my $tree= Tree::RB::XS->new(compare_fn => 'int', kv => [ 1,1, 2,2, 3,3 ]);
+	$tree->rekey(offset => 10, min => $tree->min_node, max => $tree->max_node);
+	is( [$tree->kv], [ 11,1, 12,2, 13,3 ], 'offset 10 from min_node to max_node' );
+	
+	$tree= Tree::RB::XS->new(compare_fn => 'int', kv => [ 1,1, 2,2, 3,3 ]);
+	$tree->rekey(offset => 10, min => $tree->iter, max => $tree->rev_iter);
+	is( [$tree->kv], [ 11,1, 12,2, 13,3 ], 'offset 10 from iter to rev_iter' );
 };
 
 done_testing;
