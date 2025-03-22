@@ -1,6 +1,7 @@
 #include "EXTERN.h"
 #include "perl.h"
 #include "XSUB.h"
+#define NEED_mg_findext
 #include "ppport.h"
 
 /* The core Red/Black algorithm which operates on rbtree_node_t */
@@ -2700,7 +2701,7 @@ rekey(tree, ...)
 					*final_item= (positive? (min_item? min_item : first_item)
 					                      : (max_item? max_item : last_item)),
 					stack_item;
-				TreeRBXS_init_tmp_item(&stack_item, tree, &PL_sv_zero, &PL_sv_undef);
+				TreeRBXS_init_tmp_item(&stack_item, tree, &PL_sv_no, &PL_sv_undef);
 				while (1) {
 					if (intmode) {
 						IV newval= edge_item->keyunion.ikey + offset_iv;
