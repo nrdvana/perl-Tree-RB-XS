@@ -62,6 +62,10 @@ Tree-specific features:
   
   $tree->put(b => 2);
   $tree->min_node->prune;                # manipulate tree via node methods
+  
+  my $tree= Tree::RB::XS->new('int');
+  $tree->put_multi(1,1, 2,2, 3,3);
+  $tree->rekey(offset => 5);             # shift all keys by +5 in O(N) time
 
 Support duplicate keys:
 
