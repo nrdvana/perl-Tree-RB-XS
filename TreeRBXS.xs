@@ -2657,6 +2657,9 @@ rekey(tree, ...)
 			/* offset can only be used for integer or floating point keys */
 			if (tree->key_type == KEY_TYPE_INT) {
 				intmode= 1;
+				/* I could create a whole branch of UV comparisons and handling, but I don't feel like it */
+				if (SvUOK(offset_sv) && SvUV(offset_sv) > IV_MAX)
+					croak("Unsigned values larger than can fit in a signed IV are not supported.  Patches welcome.");
 				offset_iv= SvIV(offset_sv);
 				if (offset_iv == 0)
 					goto done;
@@ -2665,12 +2668,12 @@ rekey(tree, ...)
 				/* For integers, ensure there isn't an overflow */
 				if (positive) {
 					IV max_key= (max_item? max_item : last_item)->keyunion.ikey;
-					if (max_key + offset_iv <= max_key)
-						croak("Integer overflow when adding this offset (%ld) to the maximum key (%ld)", (long) offset_iv, (long) max_key);
+					if (IV_MAX - offset_iv < max_key)
+						croak("Integer overflow when adding this offset (%"IVdf") to the maximum key (%"IVdf")", offset_iv, max_key);
 				} else {
 					IV min_key= (min_item? min_item : first_item)->keyunion.ikey;
-					if (min_key + offset_iv >= min_key)
-						croak("Integer overflow when adding this offset (%ld) to the maximum key (%ld)", (long) offset_iv, (long) min_key);
+					if (IV_MIN - offset_iv > min_key)
+						croak("Integer overflow when adding this offset (%"IVdf") to the maximum key (%"IVdf")", offset_iv, min_key);
 				}
 			}
 			else if (tree->key_type == KEY_TYPE_FLOAT) {
