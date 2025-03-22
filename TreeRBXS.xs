@@ -2582,6 +2582,216 @@ delete(tree, key1, key2= NULL)
 		RETVAL
 
 void
+rekey(tree, ...)
+	struct TreeRBXS *tree
+	INIT:
+		struct TreeRBXS_item *min_item= NULL, *max_item= NULL;
+		SV *min_sv= NULL, *max_sv= NULL, *offset_sv= NULL;
+		int i;
+	PPCODE:
+		/* Look for parameters named:
+			offset
+		    min
+		    max
+		*/
+		for (i= 1; i < items; i++) {
+			STRLEN len;
+			char *opt_name= SvPV(ST(i), len);
+			if (++i >= items)
+				croak("Expected value for key '%s'", opt_name);
+			switch (len) {
+			case 3:
+				switch (opt_name[1]) {
+				case 'a': if (strncmp(opt_name, "max", len) == 0) { max_sv= ST(i); continue; }
+				case 'i': if (strncmp(opt_name, "min", len) == 0) { min_sv= ST(i); continue; }
+				}
+				break;
+			case 6:
+				if (strncmp(opt_name, "offset", len) == 0) { offset_sv= ST(i); continue; }
+			}
+			croak("Unknown option '%s'", opt_name);
+		}
+		/* Nothing to do for an empty tree */
+		if (!TreeRBXS_get_count(tree))
+			goto done;
+		/* Translate min/max from iterators or keys to the nearest affected nodes */
+		if (min_sv) {
+			min_item= TreeRBXS_get_magic_item(min_sv, 0);
+			if (!min_item) {
+				struct TreeRBXS_iter *it;
+				if (SvROK(min_sv) && (it= TreeRBXS_get_magic_iter(min_sv, 0))) {
+					min_item= it->item;
+					if (!min_item) croak("Iterator for 'min' is not referencing a tree node");
+				}
+				else {
+					struct TreeRBXS_item stack_item;
+					TreeRBXS_init_tmp_item(&stack_item, tree, min_sv, &PL_sv_undef);
+					min_item= TreeRBXS_find_item(tree, &stack_item, GET_GE);
+				}
+			}
+		}
+		if (max_sv) {
+			max_item= TreeRBXS_get_magic_item(max_sv, 0);
+			if (!max_item) {
+				struct TreeRBXS_iter *it;
+				if (SvROK(max_sv) && (it= TreeRBXS_get_magic_iter(max_sv, 0))) {
+					max_item= it->item;
+					if (!max_item) croak("Iterator for 'max' is not referencing a tree node");
+				}
+				else {
+					struct TreeRBXS_item stack_item;
+					TreeRBXS_init_tmp_item(&stack_item, tree, max_sv, &PL_sv_undef);
+					max_item= TreeRBXS_find_item(tree, &stack_item, GET_LE);
+				}
+			}
+		}
+		if (offset_sv) {
+			int intmode= 0, positive= 0;
+			IV offset_iv;
+			NV offset_nv;
+			struct TreeRBXS_item *first_item= GET_TreeRBXS_item_FROM_rbnode(rbtree_node_left_leaf(TreeRBXS_get_root(tree)));
+			struct TreeRBXS_item *last_item=  GET_TreeRBXS_item_FROM_rbnode(rbtree_node_right_leaf(TreeRBXS_get_root(tree)));
+			struct TreeRBXS_item *edge_item;
+			rbtree_node_t *boundary_node;
+			rbtree_node_t* (*node_seek[2])(rbtree_node_t *)= { rbtree_node_prev, rbtree_node_next };
+			/* offset can only be used for integer or floating point keys */
+			if (tree->key_type == KEY_TYPE_INT) {
+				intmode= 1;
+				offset_iv= SvIV(offset_sv);
+				if (offset_iv == 0)
+					goto done;
+				else
+					positive= offset_iv > 0? 1 : 0;
+				/* For integers, ensure there isn't an overflow */
+				if (positive) {
+					IV max_key= (max_item? max_item : last_item)->keyunion.ikey;
+					if (max_key + offset_iv <= max_key)
+						croak("Integer overflow when adding this offset (%ld) to the maximum key (%ld)", (long) offset_iv, (long) max_key);
+				} else {
+					IV min_key= (min_item? min_item : first_item)->keyunion.ikey;
+					if (min_key + offset_iv >= min_key)
+						croak("Integer overflow when adding this offset (%ld) to the maximum key (%ld)", (long) offset_iv, (long) min_key);
+				}
+			}
+			else if (tree->key_type == KEY_TYPE_FLOAT) {
+				offset_nv= SvNV(offset_sv);
+				if (offset_nv == 0.0)
+					goto done;
+				else
+					positive= offset_nv > 0? 1 : 0;
+			}
+			else croak("Option 'offset' may only be used on trees with integer or floating point numeric keys");
+
+			/* If keys are increasing, compare max modified vs. node to the right of that.
+			 * If keys are decreasing, compare min modified vs. node to the left of that.
+			 * To prevent redundant code, use the 'positive' flag to indicate rightward
+			 * or leftward comparisons.  The 'edge_item' is the one that needs checked for
+			 * collisions with its stationary neighbors, the first of thich is 'boundary_item'..
+			 */
+			edge_item= positive? max_item : min_item;
+			if (edge_item && (boundary_node= node_seek[positive](&edge_item->rbnode))) {
+				void (*node_insert[2])(rbtree_node_t *parent, rbtree_node_t *child)=
+					{ rbtree_node_insert_before, rbtree_node_insert_after };
+				struct TreeRBXS_item
+					*boundary_item= GET_TreeRBXS_item_FROM_rbnode(boundary_node),
+					*final_item= (positive? (min_item? min_item : first_item)
+					                      : (max_item? max_item : last_item)),
+					stack_item;
+				TreeRBXS_init_tmp_item(&stack_item, tree, &PL_sv_zero, &PL_sv_undef);
+				while (1) {
+					if (intmode) {
+						IV newval= edge_item->keyunion.ikey + offset_iv;
+						if (positive? (newval < boundary_item->keyunion.ikey)
+						            : (newval > boundary_item->keyunion.ikey)
+						) break; /* no longer overlappig boundary */
+						stack_item.keyunion.ikey= newval;
+					} else {
+						NV newval= edge_item->keyunion.nkey + offset_nv;
+						if (positive? (newval < boundary_item->keyunion.nkey)
+						            : (newval > boundary_item->keyunion.nkey)
+						) break; /* no longer overlappig boundary */
+						stack_item.keyunion.nkey= newval;
+					}
+					/* There is an overlap.  Perform a prune + insert.  This can't re-use
+					 * the standard insertion code for nodes because that makes assumptions
+					 * that the tree is changing size, where in this case the size remains
+					 * the same.  Also this code intentionally doesn't modify the 'recent'
+					 * order.
+					 *
+					 * In the spirit of preserving order, make sure this element inserts closest
+					 * to the boundary_item of any duplicates, so use rbtree_find_all to get the
+					 * leftmost/rightmost match, or else the nearest node to insert under.
+					 *
+					 * Also, wait until the last minute to perform the prune operation so
+					 * that if there is a perl exception in a compare function we don't leak
+					 * the node.
+					 */
+					rbtree_node_t *next= node_seek[1-positive](&edge_item->rbnode);
+					rbtree_node_t *search[2];
+					bool found_identical= rbtree_find_all(
+						&tree->root_sentinel,
+						&stack_item,
+						(int(*)(void*,void*,void*)) tree->compare,
+						tree, -OFS_TreeRBXS_item_FIELD_rbnode,
+						&search[0], &search[1], NULL);
+					/* remove */
+					rbtree_node_prune(&edge_item->rbnode);
+					/* alter key */
+					if (intmode) edge_item->keyunion.ikey= stack_item.keyunion.ikey;
+					else edge_item->keyunion.nkey= stack_item.keyunion.nkey;
+					if (found_identical) {
+						/* insert-before leftmost, or insert-after rightmost */
+						node_insert[1-positive](search[1-positive], &edge_item->rbnode);
+						/* remove conflicting nodes, if not permitted */
+						if (!tree->allow_duplicates) {
+							rbtree_node_t *node= search[0];
+							do {
+								struct TreeRBXS_item *item= GET_TreeRBXS_item_FROM_rbnode(node);
+								node= (node == search[1])? NULL : rbtree_node_next(node);
+								if (item != edge_item)
+									TreeRBXS_item_detach_tree(item, tree);
+							} while (node);
+							/* boundary item may have just been deleted */
+							boundary_item= GET_TreeRBXS_item_FROM_rbnode(node_seek[positive](next));
+						}
+					}
+					else if (search[0])
+						rbtree_node_insert_after(search[0], &edge_item->rbnode);
+					else
+						rbtree_node_insert_before(search[1], &edge_item->rbnode);
+					if (!next || edge_item == final_item)
+						goto done;
+					edge_item= GET_TreeRBXS_item_FROM_rbnode(next);
+				}
+				/* The loop above ends as soon as there is no more overlap, or skips to end of
+				 * function when there are no more nodes to move.  The code below will continue
+				 * modifying keys under the assumption that nothing collides and the tree
+				 * structure remains unchanged.
+				 */
+				*(positive? &max_item : &min_item)= edge_item;
+			}
+			{
+				rbtree_node_t *node= min_item? &min_item->rbnode : &first_item->rbnode;
+				rbtree_node_t *end= max_item? &max_item->rbnode : &last_item->rbnode;
+				while (1) {
+					if (intmode)
+						GET_TreeRBXS_item_FROM_rbnode(node)->keyunion.ikey += offset_iv;
+					else
+						GET_TreeRBXS_item_FROM_rbnode(node)->keyunion.nkey += offset_nv;
+					if (node == end) break;
+					node= rbtree_node_next(node);
+				}
+			}
+		}
+		else {
+			/* In the future, other modes of altering keys could be available */
+			croak("offset not specified");
+		}
+		
+		done:
+		XSRETURN(1); /* return self for chaining */
+
+void
 truncate_recent(tree, max_count)
 	struct TreeRBXS *tree
 	IV max_count

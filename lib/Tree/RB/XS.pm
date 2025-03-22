@@ -530,6 +530,26 @@ If you want to delete a range *exclusive* of one or both ends of the range, just
 use the L</get_node> method with the desired mode to look up each end of the nodes
 that you do want removed.
 
+=head2 rekey
+
+  $tree->rekey(
+    offset => $n,
+    min => $min_key_or_node_or_iter,
+    max => $max_key_or_Node_or_iter
+  );
+
+This rewrites the keys of one or more nodes, like removing and re-adding the nodes with
+different keys, but more efficient.  If the offset applied to the key does not cause any nodes
+to change order, this operates in C<< O(N) >> time, and if the "relative_keys" feature is
+enabled, it operates in C<< O(log(N)) >> time.  If the nodes do change order (e.g. from
+min_node overlapping with the node before it, or max_node overlapping with the node after it)
+then it falls back to C<< O(N log(N)) >> time but at least saves the overhead of re-allocating
+nodes.  Note that if C<allow_duplicates> is false, key collisions will cause other nodes to be
+deleted from the tree.
+
+This modification does not affect the list of "recent" nodes.  (except for any nodes removed
+due to key collisions)
+
 =head2 truncate_recent
 
   my @nodes= $tree->truncate_recent($max_count);
