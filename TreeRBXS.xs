@@ -269,6 +269,7 @@ struct TreeRBXS {
 	struct TreeRBXS_iter *hashiter;// iterator used for TIEHASH
 	struct dllist_node recent;     // insertion order tracking
 	size_t recent_count;           // number of nodes being LRU-tracked
+	IV recent_limit;               // maximum allowed recent-tracked nodes
 	bool hashiterset;              // true if the hashiter has been set manually with hseek
 	struct TreeRBXS_item
 	    *prev_inserted_item;       // optimize adjacent inserts by tracking previous insert
@@ -284,6 +285,7 @@ static struct TreeRBXS_item *TreeRBXS_find_item(struct TreeRBXS *tree, struct Tr
 static bool TreeRBXS_is_member(struct TreeRBXS *tree, struct TreeRBXS_item *item);
 static void TreeRBXS_recent_insert_before(struct TreeRBXS *tree, struct TreeRBXS_item *item, struct dllist_node *node_after);
 static void TreeRBXS_recent_prune(struct TreeRBXS *tree, struct TreeRBXS_item *item);
+static void TreeRBXS_truncate_recent(struct TreeRBXS *tree, IV lim, SV **nodes_out);
 static void TreeRBXS_destroy(struct TreeRBXS *tree);
 
 #define TreeRBXS_get_root(tree) ((tree)->root_sentinel.left)
@@ -344,6 +346,7 @@ static void TreeRBXS_item_detach_owner(struct TreeRBXS_item* item);
 static void TreeRBXS_item_detach_tree(struct TreeRBXS_item* item, struct TreeRBXS *tree);
 static void TreeRBXS_item_clear(struct TreeRBXS_item* item, struct TreeRBXS *tree);
 static void TreeRBXS_item_free(struct TreeRBXS_item *item);
+static SV* TreeRBXS_wrap_item(struct TreeRBXS_item *item);
 
 struct TreeRBXS_iter {
 	struct TreeRBXS *tree;
@@ -367,6 +370,7 @@ static void TreeRBXS_init(struct TreeRBXS *tree, SV *owner) {
 	/* defaults, which can be overridden by _init_tree */
 	tree->key_type= KEY_TYPE_ANY;
 	tree->compare_fn_id= CMP_PERL;
+	tree->recent_limit= -1;
 }
 
 static void TreeRBXS_clear(struct TreeRBXS *tree) {
@@ -418,6 +422,8 @@ static void TreeRBXS_assert_structure(struct TreeRBXS *tree) {
 	} else {
 		if (tree->recent.prev == &tree->recent || tree->recent.next == &tree->recent)
 			croak("recent_count > 0, but list is empty");
+		if (tree->recent_limit >= 0 && tree->recent_count > tree->recent_limit)
+			croak("recent_count > recent_limit");
 	}
 	//warn("Tree is healthy");
 }
@@ -1120,6 +1126,9 @@ static void TreeRBXS_recent_insert_before(struct TreeRBXS *tree, struct TreeRBXS
 		node_before->next= &item->recent;
 		item->recent.prev= node_before;
 		item->recent.next= node_after;
+		// prune oldest node if exceeded limit
+		if (tree->recent_limit >= 0 && tree->recent_count > tree->recent_limit)
+			TreeRBXS_truncate_recent(tree, tree->recent_limit, NULL);
 	}
 }
 
@@ -1136,6 +1145,27 @@ static void TreeRBXS_recent_prune(struct TreeRBXS *tree, struct TreeRBXS_item *i
 		item->recent.next= NULL;
 		item->recent.prev= NULL;
 		--tree->recent_count;
+	}
+}
+
+/* Remove all nodes older than the newest 'lim'-count
+ * The caller may optionally supply 'nodes_out' to receive mortal references
+ * to the removed nodes.  The caller must size it for (tree->recent_count - lim)
+ */
+static void TreeRBXS_truncate_recent(struct TreeRBXS *tree, IV lim, SV **nodes_out) {
+	if (lim >= 0 && tree->recent_count > lim) {
+		IV i, n= tree->recent_count - lim;
+		struct dllist_node *next, *cur= tree->recent.next;
+		for (i= 0; i < n && cur && cur != &tree->recent; i++) {
+			struct TreeRBXS_item *item= GET_TreeRBXS_item_FROM_recent(cur);
+			if (nodes_out)
+				nodes_out[i]= sv_2mortal(TreeRBXS_wrap_item(item));
+			next= cur->next;
+			TreeRBXS_item_detach_tree(item, tree);
+			cur= next;
+		}
+		if (i != n)
+			croak("BUG: recent_count inconsistent with length of linked list");
 	}
 }
 
@@ -1676,6 +1706,10 @@ IV init_tree_from_attr_list(
 		case 10: if (strcmp("compare_fn", attrname) == 0) { compare_fn_sv= val; break; }
 			else goto keep_unknown;
 		case 12: if (strcmp("track_recent", attrname) == 0) { tree->track_recent= val && SvTRUE(val); break; }
+			else if (strcmp("recent_limit", attrname) == 0) {
+				tree->recent_limit= val && SvOK(val) && SvIV(val) >= 0? SvIV(val) : -1;
+				break;
+			}
 			else goto keep_unknown;
 		case 15: if (strcmp("compat_list_get", attrname) == 0) { tree->compat_list_get= val && SvTRUE(val); break; }
 			else goto keep_unknown;
@@ -1962,6 +1996,10 @@ STORABLE_freeze(tree, cloning)
 		while ((pos= hv_iternext(treehv))) {
 			av_push(attrs, SvREFCNT_inc(hv_iterkeysv(pos)));
 			av_push(attrs, newSVsv(hv_iterval(treehv, pos)));
+		}
+		if (tree->recent_limit >= 0) {
+			av_push(attrs, newSVpvs("recent_limit"));
+			av_push(attrs, newSViv(tree->recent_limit));
 		}
 
 		/* Build lists of keys and values */
@@ -2286,6 +2324,27 @@ recent_count(tree)
 		RETVAL= tree->recent_count;
 	OUTPUT:
 		RETVAL
+
+void
+recent_limit(tree, newval=NULL)
+	struct TreeRBXS *tree
+	SV *newval
+	PPCODE:
+		if (newval) {
+			if (!SvOK(newval)) {
+				tree->recent_limit= -1;
+			} else if (!looks_like_number(newval) || SvIV(newval) < 0) {
+				croak("Expected non-negative integer");
+			} else {
+				tree->recent_limit= SvIV(newval);
+				TreeRBXS_truncate_recent(tree, tree->recent_limit, NULL);
+			}
+			//ST(0) is $self, so let it be the return value
+		} else {
+			ST(0)= tree->recent_limit < 0? &PL_sv_undef
+			     : sv_2mortal(newSViv(tree->recent_limit));
+		}
+		XSRETURN(1);
 
 void
 _insert_optimization_debug(tree)
@@ -2825,30 +2884,20 @@ truncate_recent(tree, max_count)
 		bool keep= !(GIMME_V == G_VOID || GIMME_V == G_SCALAR);
 		IV i, n= 0;
 	PPCODE:
-		if (max_count > 0 && tree->recent_count > max_count) {
+		// prune oldest nodes if exceeded limit
+		if (max_count >= 0 && tree->recent_count > max_count) {
 			n= tree->recent_count - max_count;
-			cur= tree->recent.next;
-			if (keep)
+			if (keep) {
 				EXTEND(SP, n);
-			for (i= 0; i < n && cur && cur != &tree->recent; i++) {
-				item= GET_TreeRBXS_item_FROM_recent(cur);
-				if (keep)
-					ST(i)= sv_2mortal(TreeRBXS_wrap_item(item));
-				next= cur->next;
-				TreeRBXS_item_detach_tree(item, tree);
-				cur= next;
+				TreeRBXS_truncate_recent(tree, max_count, &ST(0));
+				XSRETURN(n);
+			} else {
+				TreeRBXS_truncate_recent(tree, max_count, NULL);
 			}
-			if (i != n)
-				croak("BUG: recent_count inconsistent with length of linked list");
 		}
-		if (keep) {
-			XSRETURN(n);
-		} else if (GIMME_V == G_SCALAR) {
-			ST(0)= sv_2mortal(newSViv(n));
-			XSRETURN(1);
-		} else {
-			XSRETURN(0);
-		}
+		if (GIMME_V == G_SCALAR)
+			PUSHs(sv_2mortal(newSViv(n)));
+		/* else return empty list */
 
 IV
 clear(tree)

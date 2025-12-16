@@ -225,6 +225,13 @@ You may toggle this attribute after construction.
 
 =item *
 
+C<recent_limit>
+
+Maximum number of elements in the recent list before auto-truncating them.
+You may alter this attribute after construction.
+
+=item *
+
 C<lookup_updates_recent>
 
 Whether L</lookup> and L</get> methods automatically mark a node as the most recent.
@@ -356,6 +363,11 @@ Returns the number of elements in the tree.
 =head2 recent_count
 
 Returns the number of nodes with insertion-order tracking enabled.  See L</track_recent>.
+
+=head2 recent_limit
+
+If you set this attribute, any time the tree's recent list exceeds this number, the oldest nodes
+on the list will be automatically pruned as per L</truncate_recent>.  The default is C<undef>.
 
 =head2 root_node
 
