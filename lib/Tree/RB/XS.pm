@@ -527,6 +527,12 @@ the old value, and updates the tree to reference the new value.  If the tree
 allows duplicate keys, this will remove all but one node having this key and
 then set its value.  Only the first old value will be returned.
 
+=head2 put_as_node
+
+  my $node= $tree->put_as_node($key, $new_val);
+
+Same as L</put> but return the node object.
+
 =head2 put_multi
 
   $added_count= $tree->put_multi($k, $v, $k, $v, ...);
@@ -547,6 +553,12 @@ Insert a new node into the tree, and return the index at which it was inserted.
 If L</allow_duplicates> is not enabled, and the node already existed, this returns -1
 and does not change the tree.  If C<allow_duplicates> is enabled, this adds the new
 node after all nodes of the same key, preserving the insertion order.
+
+=head2 insert_as_node
+
+  my $node= $tree->insert_as_node($key, $value);
+
+Same as L</insert> but return the node object.
 
 =head2 insert_multi
 

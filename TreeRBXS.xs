@@ -1225,8 +1225,13 @@ TreeRBXS_insert_item(struct TreeRBXS *tree, struct TreeRBXS_item *stack_item, bo
 		if (cmp == 0) {
 			++tree->prev_inserted_trend;
 			if (overwrite) {
-				if (tree->prev_inserted_dup)
+				if (tree->prev_inserted_dup) {
+					/* the 'hint' provided needs to be the parent-most node of the duplicates */
+					while (hint->parent != &tree->root_sentinel
+						&& tree->compare(tree, stack_item, GET_TreeRBXS_item_FROM_rbnode(hint->parent)) == 0)
+						hint= hint->parent;
 					goto overwrite_multi;
+				}
 				else
 					goto overwrite_single;
 			} else if (tree->allow_duplicates)
@@ -2558,8 +2563,10 @@ insert(tree, key, val=&PL_sv_undef)
 	SV *key
 	SV *val
 	ALIAS:
-		Tree::RB::XS::put         = 1
-		Tree::RB::XS::STORE       = 1
+		Tree::RB::XS::put            = 1
+		Tree::RB::XS::STORE          = 1
+		Tree::RB::XS::insert_as_node = 2
+		Tree::RB::XS::put_as_node    = 3
 	INIT:
 		struct TreeRBXS_item stack_item, *inserted;
 		SV *oldval= NULL;
@@ -2568,9 +2575,10 @@ insert(tree, key, val=&PL_sv_undef)
 		if (!SvOK(key))
 			croak("Can't use undef as a key");
 		TreeRBXS_init_tmp_item(&stack_item, tree, key, val);
-		inserted= TreeRBXS_insert_item(tree, &stack_item, ix == 1, &oldval);
+		inserted= TreeRBXS_insert_item(tree, &stack_item, (ix & 1), &oldval);
 		ST(0)= ix == 0? sv_2mortal(newSViv(inserted? rbtree_node_index(&inserted->rbnode) : -1))
-			: (oldval? oldval : &PL_sv_undef);
+			: ix == 1? (oldval? oldval : &PL_sv_undef)
+			: (inserted? sv_2mortal(TreeRBXS_wrap_item(inserted)) : &PL_sv_undef);
 		XSRETURN(1);
 
 IV
